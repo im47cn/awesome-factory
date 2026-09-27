@@ -701,7 +701,8 @@ def _is_derived(rel: Path) -> bool:
     缓存/系统目录名，或 *.pyc 后缀。rel 须为 scripts_dir 内相对路径——枚举
     根之上的祖先段不参与匹配（检出位置不得污染判定）。
     """
-    return (any(part in _DERIVED_PARTS for part in rel.parts)
+    return (any(part in _DERIVED_PARTS or part.startswith(".coverage")
+                for part in rel.parts)
             or rel.suffix in _DERIVED_SUFFIXES)
 
 

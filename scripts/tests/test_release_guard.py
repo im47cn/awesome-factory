@@ -182,6 +182,7 @@ class TestContentHashContract:
         ruff = scripts / ".ruff_cache" / "0.16.8"
         ruff.mkdir(parents=True)
         (ruff / "11728694205254252146").write_bytes(b"\x00\x01\x02cache")
+        (scripts / ".coverage.myhost.42.0xA1B2").write_bytes(b"\x00\x01")
         nested = scripts / "sub" / "__pycache__"
         nested.mkdir(parents=True)
         (nested / "x.cpython-314.pyc").write_bytes(b"\xff\xfe")

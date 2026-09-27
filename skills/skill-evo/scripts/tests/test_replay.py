@@ -937,6 +937,10 @@ def test_skill_content_hash_excludes_derived_artifacts(tmp_path):
     (skill / "scripts" / "__pycache__" / "a.cpython-311.pyc").write_bytes(b"\x00junk")
     (skill / "scripts" / ".pytest_cache" / "lastfailed.json").write_text("{}", encoding="utf-8")
     (skill / "scripts" / ".DS_Store").write_bytes(b"\x00")
+    # coverage.py 运行时产物（SQLite 二进制）：2026-09-27 实证残留 .coverage
+    # 使指纹读取炸 UnicodeDecodeError、plugin_lock/pre-push 全红
+    (skill / "scripts" / ".coverage").write_bytes(b"SQLite format 3\x00")
+    (skill / "scripts" / ".coverage.host.123.0xabc").write_bytes(b"\x00")
     assert R.skill_content_hash("demo", root=tmp_path) == base
 
 
