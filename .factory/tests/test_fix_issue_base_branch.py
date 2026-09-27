@@ -78,6 +78,12 @@ def _mk_clone(tmp: Path, default_branch: str) -> Path:
     return tmp / "dn"
 
 
+def test_blocks_are_identical():
+    # 拷贝等价不变量显式钉死（Sourcery PR #256）：行为测试只钉三态语义，
+    # 行为等价的文本漂移（如 sed 表达式微调）须靠逐字相等断言拦截
+    assert _block("fix-issue.sh") == _block("upstream-sync-check.sh")
+
+
 @pytest.mark.parametrize("script", _SCRIPTS)
 def test_env_override_wins(tmp_path, script):
     dn = _mk_clone(tmp_path, "main")
