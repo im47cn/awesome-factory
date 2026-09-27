@@ -1,5 +1,5 @@
 -- 用户账户表
-CREATE TABLE t_user_account (
+CREATE TABLE t_user_acct (
     id              bigint(20)     NOT NULL COMMENT '主键id',
     creator_id      varchar(36)    NOT NULL COMMENT '创建人id',
     create_time     datetime       NOT NULL COMMENT '创建时间',

@@ -2,10 +2,10 @@
   "schema": "replay-evidence/1",
   "skill": "ddl-guard",
   "content_hash": "sha256:b75ba79a407d81f015dfe1f20c27953beb3918bde17d11130161edb859d562d8",
-  "generated_at": "2026-09-26T23:51:31+00:00",
+  "generated_at": "2026-09-27T12:49:39+00:00",
   "k": 3,
-  "pass_at_k": 0.973,
-  "pass_cap_k": 0.973,
+  "pass_at_k": 1.0,
+  "pass_cap_k": 1.0,
   "invocation": {
     "skill_invoked": true,
     "evidence": "dry-run"
