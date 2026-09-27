@@ -20,9 +20,8 @@
     "arch-guard": "sha256:6f137baf06b7e63171416b2566e7eea62a58ddeeeb65597e274a45d28403e77d",
     "contract-guard": "sha256:cac0f758c37b75d8c507a394ff34735dcb0d410e00e1ec5b033e48f6c76a8749",
     "ddl-guard": "sha256:fd42bac1ff966a678d47483a19f3f9e0970fac3920bd4169bf5712084fbaee77",
-    "doc-gen": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "impact-guard": "sha256:b38d0d00db6470eeba857cc558659e59e03b7a95bed2bc5abbf388fdba4b6d5a",
-    "skill-evo": "sha256:84688c8d57bcceb6c9310e5e42a93132a4b50bb3f4e2d67a70afb3729edd6f1f",
+    "skill-evo": "sha256:078a19bb94ee4d31032d29e7d5e2cc2cbd180a4354d82cf0933fa7dc465320d8",
     "task-flow": "sha256:9ecdca4ec05040d04fbe0414bb8248d17371425b5dafa130f4571ab8d72bdf11",
     "work-report": "sha256:f0207bf9db034e059e83bbd57c78ded688ed63c05e82164bf8e81c43be08e9cb"
   }

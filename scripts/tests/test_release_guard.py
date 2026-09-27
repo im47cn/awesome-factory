@@ -176,6 +176,11 @@ class TestContentHashContract:
         (scripts / "__pycache__" / "run.cpython-314.pyc").write_bytes(
             b"\xcb\x0d\x0d\x0a")
         (scripts / ".DS_Store").write_bytes(b"\x00\x00\x00Bud1")
+        # 2026-09-27 实证：残留 .coverage（SQLite 二进制）使指纹读取炸
+        # UnicodeDecodeError——coverage 运行时产物连同 .coverage.<host> 变体
+        # 一并排除
+        (scripts / ".coverage").write_bytes(b"SQLite format 3\x00")
+        (scripts / ".coverage.myhost.42.0xA1B2").write_bytes(b"\x00\x01")
         nested = scripts / "sub" / "__pycache__"
         nested.mkdir(parents=True)
         (nested / "x.cpython-314.pyc").write_bytes(b"\xff\xfe")

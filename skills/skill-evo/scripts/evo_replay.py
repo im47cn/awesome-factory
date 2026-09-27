@@ -688,7 +688,8 @@ def call_claude_stream(prompt: str, cfg: dict) -> Tuple[str, List[dict]]:
     return final_text or "".join(texts), events
 
 
-_DERIVED_PARTS = frozenset({".pytest_cache", "__pycache__", ".DS_Store"})
+_DERIVED_PARTS = frozenset({".pytest_cache", "__pycache__", ".DS_Store",
+                           ".coverage"})
 _DERIVED_SUFFIXES = (".pyc",)
 
 
@@ -697,7 +698,8 @@ def _is_derived(rel: Path) -> bool:
     缓存/系统目录名，或 *.pyc 后缀。rel 须为 scripts_dir 内相对路径——枚举
     根之上的祖先段不参与匹配（检出位置不得污染判定）。
     """
-    return (any(part in _DERIVED_PARTS for part in rel.parts)
+    return (any(part in _DERIVED_PARTS or part.startswith(".coverage")
+                for part in rel.parts)
             or rel.suffix in _DERIVED_SUFFIXES)
 
 

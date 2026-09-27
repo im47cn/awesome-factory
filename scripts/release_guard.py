@@ -143,7 +143,8 @@ _CONTENT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SKIP_ENV = "RELEASE_EVIDENCE_SKIP"
 
 
-_DERIVED_PARTS = frozenset({".pytest_cache", "__pycache__", ".DS_Store"})
+_DERIVED_PARTS = frozenset({".pytest_cache", "__pycache__", ".DS_Store",
+                           ".coverage"})
 _DERIVED_SUFFIXES = (".pyc",)
 
 
@@ -160,7 +161,8 @@ def _is_derived(path: Path) -> bool:
     参与匹配——仓库检出到名为 __pycache__ 等派生产物目录下时，
     scripts/** 不得被整体误判排除（Sourcery #229 评审，2026-09-21）。
     """
-    return (any(part in _DERIVED_PARTS for part in path.parts)
+    return (any(part in _DERIVED_PARTS or part.startswith(".coverage")
+                for part in path.parts)
             or path.suffix in _DERIVED_SUFFIXES)
 
 
