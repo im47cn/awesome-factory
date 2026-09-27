@@ -154,7 +154,9 @@ def _is_derived(path: Path) -> bool:
 
     这些文件随本地测试运行生灭（pytest 写 .pytest_cache/、解释器写
     __pycache__/*.pyc、Finder 写 .DS_Store、coverage 写 .coverage、
-    ruff 写 .ruff_cache/），不属于 skill 源文件面，
+    ruff 写 .ruff_cache/），不属于 skill 源文件面；.coverage 按前缀
+    匹配（.coverage.<host>.<pid> 等 combine 变体一并排除），其余
+    项按段名/后缀精确匹配，
     计入哈希会让指纹随工作区卫生状况漂移（2026-09-21 plugin_lock
     全红事故：重锁时缓存被静默吞入锁定值）。其余未知二进制不在排除
     之列，仍由读取期 UTF-8 校验干净拦截。
