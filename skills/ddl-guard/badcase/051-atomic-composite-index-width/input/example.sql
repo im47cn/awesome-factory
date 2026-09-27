@@ -8,8 +8,9 @@ CREATE TABLE t_order_info (
     last_update_time datetime      NOT NULL COMMENT '最后更新时间',
     del_flag        tinyint(4)     NOT NULL DEFAULT 0 COMMENT '删除标志[0-否,1-是]',
     order_status    varchar(10)    NOT NULL COMMENT '订单状态',
+    biz_no          varchar(20)    NOT NULL COMMENT '业务编号',
     buyer_id        bigint(20)     NOT NULL COMMENT '买家id',
     PRIMARY KEY (id),
     UNIQUE KEY uk_order_no (order_no),
-    KEY ix_multi (order_status, buyer_id, create_time, last_update_time, del_flag, order_no)
+    KEY ix_biz_no_order_no_buyer_id_del_flag_creator_id_create_time (biz_no, order_no, buyer_id, del_flag, creator_id, create_time)
 ) COMMENT = '订单信息表';

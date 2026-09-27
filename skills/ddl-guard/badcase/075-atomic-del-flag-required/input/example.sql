@@ -1,5 +1,5 @@
 -- 订单信息表（缺 del_flag）
-CREATE TABLE t_order_del_check (
+CREATE TABLE t_order_del_probe (
     id               bigint(20)     NOT NULL COMMENT '主键id',
     order_no         varchar(36)    NOT NULL COMMENT '订单编号',
     creator_id       varchar(36)    NOT NULL DEFAULT '' COMMENT '创建人id',

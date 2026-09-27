@@ -26,7 +26,7 @@ class TestOps:
 
     def test_base_table_ops_all_hit(self):
         # 所有模板的替换片段必须命中 BASE_TABLE（防模板漂移）
-        for _rule, _cid, _title, v_ops, b_ops in gc.TEMPLATES:
+        for _rule, _cid, _title, v_ops, b_ops, *_ in gc.TEMPLATES:
             gc._ops(gc.BASE_TABLE, v_ops)  # 不抛即命中
             if b_ops:
                 gc._ops(gc.BASE_TABLE, b_ops)
@@ -146,7 +146,7 @@ class TestGenerateReject:
         assert rejected == 0
         assert generated == len(gc.TEMPLATES) + len(gc.CLEAN_TEMPLATES) + len(
             gc.COMBO_TEMPLATES) + sum(bool(b)
-                                  for _r, _c, _t, _v, b in gc.TEMPLATES)
+                                  for _r, _c, _t, _v, b, *_ in gc.TEMPLATES)
         dirs = sorted(p.name for p in tmp_path.iterdir())
         assert dirs[0].startswith("010-")
         assert dirs[-1] != dirs[0]

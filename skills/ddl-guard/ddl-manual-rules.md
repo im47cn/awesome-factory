@@ -2,6 +2,84 @@
 
 以下规则 `ddl_check.py` 无法自动检查，审查时需逐表人工判断。
 
+## 注释格式规范【强制】
+
+字段注释严格遵循 **`中文名(补充信息)[枚举信息]`** 三段式格式：
+
+| 段 | 格式 | 用途 | 规则 |
+|---|---|---|---|
+| 中文名 | 字段英文名的 1:1 直译 | 主标题 | 严格对应英文名，不允许多描述也不允许遗漏（R1：AI 兜底） |
+| 补充信息 | `(...)` | 字段名之外的额外说明 | 不能与主标题完全相同或语义重复（R3：脚本 + AI 兜底） |
+| 枚举信息 | `[k-v,k-v,...]` | 字段的取值范围 | k-v 用 `-` 或 `=` 分隔；多个用 `,` 分隔（R2：脚本检查） |
+
+### 示例
+
+```sql
+-- ✅ 规范：中文名 = mch_id 直译，补充信息含必要说明，枚举信息完整
+mch_id     varchar(36) NOT NULL DEFAULT '' COMMENT '商户id',
+
+-- ✅ 规范：父参数id(0=根,支持嵌套)
+parent_id  bigint       NOT NULL DEFAULT 0  COMMENT '父参数id(0=根,支持嵌套)',
+
+-- ✅ 规范：订单状态[10-待支付,20-已支付,30-已完成]
+status     tinyint      NOT NULL DEFAULT 10 COMMENT '订单状态[10-待支付,20-已支付,30-已完成]',
+
+-- ❌ 违规：补充信息与主标题完全重复
+order_no   varchar(36)  NOT NULL DEFAULT '' COMMENT '订单编号(订单编号)',
+
+-- ❌ 违规：枚举信息格式不对（应用 k-v 形式）
+status     tinyint      NOT NULL DEFAULT 10 COMMENT '订单状态[待支付/已支付]',
+```
+
+### 检查分工
+
+| 规则 | 检查方式 | 实现位置 |
+|---|---|---|
+| R1：注释 = 字段英文名直译 | AI 语义判断 | ZCode agent 在 PR review 对话中执行（不写入脚本） |
+| R2：取值范围 `[k-v,...]` 格式 | 脚本正则 | `ddl_check.py` 直接检查 |
+| R3：补充信息与主标题重复 | 脚本字符串比对 + AI 语义 | 脚本检查"完全相同"；语义重复由 agent 复核 |
+
+**R1 复核要点（agent 必读）**：
+- `scripts/abbreviations.py::LONG_TO_SHORT` 是「长写法 → 标准缩写」映射（key 为长写法），用于判定分词是否为未规范化的长写法（命中即违规，脚本已检查）；该字典不提供中文释义，中文对照由 agent 依据字段业务语义给出
+- 缩写 → 中文释义参考（agent 语义对照，非字典内容）：`mch→商户`、`cgo→货物`、`veh→车辆`、`vou→凭证`、`aut→鉴权`、`verf→验证`、`mapp→映射`、`subscr→订阅`、`insu→保险`、`pay→支付`、`addr→地址`、`cnt→数量`、`amt→金额`、`no→编号`、`status→状态`、`type→类型`、`time→时间`、`date→日期`、`del→删除`、`flag→标志`、`id→id` 等
+- 拼接顺序与字段名分词顺序一致（下划线连接）
+- 中文注释中允许出现 `id`/`no`/`type` 等英文后缀（行业惯例），无需汉化
+
+**R3 语义重复复核要点（agent 必读）**：
+- `订单编号(订单号)`、`价格(价)`、`商户(商家)` 等括号内是主标题的同义/缩略词重复 → 视为冗余
+- `父参数id(0=根,支持嵌套)`、`状态(可空)` 等括号内含补充说明 → 视为合规
+
+## 必含字段一致性【强制：公司基线硬性要求】
+
+每个表必须包含以下必含字段，且**名称、类型、注释必须完全一致**：
+
+| 字段名 | 类型 | 注释 | 强制级别 |
+|---|---|---|---|
+| `id` | `bigint`（允许 `int` 与显示宽度 `(N)`，如 `bigint(20)`） | `主键id` | 必含（脚本已检查） |
+| `creator_id` | `varchar(36)` | `创建人id` | 必含 + 类型/注释完全一致 |
+| `create_time` | `datetime` | `创建时间` | 必含 + 类型/注释完全一致 |
+| `last_updater_id` | `varchar(36)` | `最后更新人id` | 必含 + 类型/注释完全一致 |
+| `last_update_time` | `datetime` | `最后更新时间` | 必含 + 类型/注释完全一致 |
+
+脚本检查项（已实现）：
+- **必含字段缺失**：必含字段名任何一个不存在 → `Severity.MANDATORY`
+- **必含字段定义不一致**：类型不匹配正则（如 `creator_id` 不是 `varchar(36)`） → `Severity.MANDATORY`
+- **必含字段注释不一致**：注释文本与规范完全不一致（精确字符串比较，空白不敏感） → `Severity.MANDATORY`
+
+日志/流水表（表名含 `_log`/`_flow`/`_journal`）豁免 `last_updater_id`/`last_update_time` 必含项，但仍需满足 `id`/`create_time` 的注释一致性。
+
+**缩写规则豁免**：必含字段名是公司基线硬性要求（字段名长度与写法已固化），缩写强制收敛规则对必含字段名不做检查。索引缩写检查按列逐个进行，必含字段列与规范字段列（`del_flag`）同样豁免，组合索引（如 `ix_mch_id_last_update_time`）不受影响。
+
+规范 DDL 示例（精确字符串，复用即可）：
+
+```sql
+id              bigint      NOT NULL COMMENT '主键id',
+creator_id      varchar(36) NOT NULL DEFAULT '' COMMENT '创建人id',
+create_time     datetime    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+last_updater_id varchar(36) NOT NULL DEFAULT '' COMMENT '最后更新人id',
+last_update_time datetime   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+```
+
 ## 命名语义【强制】
 
 | 规则 | 要点 | 操作指引 |
@@ -19,6 +97,54 @@
 |---|---|---|
 | 补充信息必要性 | 圆括号内容须为必要补充；冗余或让含义混淆的不写 | 审查注释中圆括号内容是否为必要补充。例如「订单状态[10-待支付,20-已支付,30-已完成]」是必要的，但「订单编号(订单号)」中括号内容冗余，应改为「订单编号」 |
 | 字段与注释对应 | 字段名与注释含义对应、词汇对应 | 审查字段名和注释是否语义一致。例如字段 `contact_mobile` 注释应为「联系人手机号」而非「联系手机」，字段 `order_no` 注释应为「订单编号」而非「订单号」 |
+
+## 缩略词规范【强制：公司数据治理要求】
+
+脚本 `ddl_check.py` 自动检查字段名/表名/索引名是否命中缩写字典的"长写法"分词，
+强制要求改用项目约定的标准缩写。命中即报 `Severity.MANDATORY`，退出码 1
+（CI 拦截）。例外：缩写 value 为 MySQL/Python 保留字的 key 跳过反向检查
+（避免违规循环）；必含字段名与规范字段名（如 `del_flag`）豁免。字典源：
+`scripts/abbreviations.py`（`LONG_TO_SHORT`，全量入库
+公司数据治理 Excel 缩略词.xlsx 共 1534 条去重英文 key + 1 条手工补全）。
+
+**按中文语义推断缩写**：扩展字典时应先确定中文含义，再选定对应英文长写法与
+标准缩写，构成"中文 → 英文 → 缩写"三段式映射。如：
+
+| 中文 | 英文长写法 | 标准缩写 |
+|---|---|---|
+| 订阅 | subscribe / subscription | subscr |
+| 凭证 | voucher | vou |
+| 映射 | mapping | mapp |
+| 鉴权 | authentication | aut |
+| 验证 | verification | verf |
+
+| 类别 | 操作指引 |
+|---|---|
+| 字典维护 | 通用元词全量维护在 `abbreviations.py`；Excel 缩略词.xlsx 3013 行 5 列已全部入库（按英文单词拆分频次 mode 选取，得到 1534 条去重 key）。新增条目按相同粒度追加 |
+| 字段命名 | 分词命中字典 key（如 `mapping`、`authentication`、`verification`、`description`）→ **必须**改用 value（`mapp`、`aut`、`verf`、`dscr`）；已用标准缩写不报错 |
+| 表名 | 同字段名规则；如 `wop_callback_subscription` 应改为 `wop_callback_subscr` |
+| 索引命名 | 索引名去掉 `ix_`/`uk_` 前缀后做同样检查；命中时强制要求改用标准缩写并同步索引名 |
+| 已知偏差 | 粘贴表本身存在少量语义错配条目（同 key 多义、单词 value 过短等），按"频次 mode + 同字跳过"规则后仍可能残留少量语义可疑映射；如需修订，对应英文 key 在 `abbreviations.py` 中手工覆盖即可 |
+
+字典维护示例：
+
+```python
+# scripts/abbreviations.py
+LONG_TO_SHORT = {
+    "mapping": "mapp",          #  映射（项目规定）
+    "voucher": "vou",           #  凭证（项目规定）
+    "subscribe": "subscr",      #  订阅（按中文语义）
+    ...
+}
+```
+
+## 索引命名【强制】
+
+| 规则 | 要点 | 操作指引 |
+|---|---|---|
+| 索引名前缀 | 普通索引 `ix_` / 唯一索引 `uk_`（脚本已检查） | 审查所有索引是否以正确前缀开头 |
+| 索引名长度 | 不超过 64 字符（脚本已检查） | 审查索引名长度，避免过长 |
+| **索引名包含全部字段名** | 索引名称由所包含字段的全名称按 `<prefix>_<field1>_<field2>...` 拼接而成（prefix 为普通索引 `ix` / 唯一索引 `uk`），字段名不允许任何缩写 | 审查每个索引的主体分词是否覆盖其引用字段的所有分词。例如：<br>✅ `KEY ix_mch_id_msg_type_status (mch_id, msg_type, status)`<br>❌ `KEY ix_mch_msg_type_status (mch_id, msg_type, status)`（索引名缺少 `_id` 完整拼写，应改为 `ix_mch_id_msg_type_status`）<br>❌ `UNIQUE KEY uk_cred (cred_id)`（索引名缺少 `_id` 完整拼写，应改为 `uk_cred_id`） |
 
 ## 设计合理性【推荐】
 
@@ -54,8 +180,9 @@
 3. **字段名**：是否细化到属性级别？是否使用英文？是否无拼音？是否无泛化词？是否无复数？
 4. **字段注释**：是否完整？是否 ≤ 128 字符？是否无全角字符？是否与字段名语义对应？
 5. **字段类型**：是否使用禁用类型？（脚本已检查）
-6. **必含字段**：是否包含 id/creator_id/create_time/last_updater_id/last_update_time？（脚本已检查）
+6. **必含字段一致性**：是否包含全部必含字段？名称、类型、注释是否与规范完全一致？（脚本已检查；必含字段名豁免缩写检查）
 7. **逻辑删除**：业务表是否必含逻辑删除字段（日志/流水表豁免）、命名统一 `del_flag`、注释格式为 `删除标志[0-否,1-是]`？（均已脚本化：存在性+命名+注释）
-8. **索引**：命名是否符合 `ix_`/`uk_` 规范？（脚本已检查）
-9. **索引有效性**：是否通过 EXPLAIN 验证？（需人工运行）
-10. **设计合理性**：字段数量 ≤ 40？单行 ≤ 8020 字节？NOT NULL + 默认值？字符串长度合理？
+8. **索引**：命名是否符合 `ix_`/`uk_` 规范？索引名是否包含全部字段的完整名？（脚本已检查）
+9. **缩略词**：字段名/索引名分词是否命中 `abbreviations.py` 的未规范化写法？（脚本已检查）
+10. **索引有效性**：是否通过 EXPLAIN 验证？（需人工运行）
+11. **设计合理性**：字段数量 ≤ 40？单行 ≤ 8020 字节？NOT NULL + 默认值？字符串长度合理？

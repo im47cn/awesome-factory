@@ -688,8 +688,11 @@ def call_claude_stream(prompt: str, cfg: dict) -> Tuple[str, List[dict]]:
     return final_text or "".join(texts), events
 
 
+# 派生产物排除集：与 A 路 release_guard 同名常量保持一致（钉测试
+# test_skill_content_hash_matches_release_guard_contract 守护两路相等）；
+# .coverage/.ruff_cache 系 3803b82 实测 push 拦截补录。
 _DERIVED_PARTS = frozenset({".pytest_cache", "__pycache__", ".DS_Store",
-                           ".coverage"})
+                            ".coverage", ".ruff_cache"})
 _DERIVED_SUFFIXES = (".pyc",)
 
 
@@ -716,24 +719,28 @@ def skill_content_hash(skill: str, root: Optional[Path] = None) -> str:
       哈希：文件改名/增删/跨文件内容重排（"ab"+"c" vs "a"+"bc"）均改变 hash；
       内容读取用 read_text('utf-8').encode('utf-8')（与契约表达式逐字一致）
     - 文件面 = SKILL.md + scripts/**，排除派生产物（_is_derived）——本地
-      测试生灭物不得扰动指纹
+      测试生灭物不得扰动指纹（.coverage/.ruff_cache 同排除，3803b82 实测
+      push 拦截补录）
     - SKILL.md 缺失 → FileNotFoundError（技能内容不完整不应静默给出可比对
       指纹）
+
+    独立实现而非 import：技能脚本需自包含分发（消费仓安装面无仓库根
+    scripts/）。跨实现一致性由钉测试守护（漂移即红）。
     """
     root = (root or _repo_root()).resolve()
-    skill_dir = root / "skills" / skill
-    skill_md = skill_dir / "SKILL.md"
+    base = root / "skills" / skill
+    skill_md = base / "SKILL.md"
     if not skill_md.is_file():
         raise FileNotFoundError(f"SKILL.md 不存在：{skill_md}")
     files = [skill_md]
-    scripts_dir = skill_dir / "scripts"
+    scripts_dir = base / "scripts"
     if scripts_dir.is_dir():
         files.extend(p for p in scripts_dir.rglob("*")
                      if p.is_file() and not _is_derived(p.relative_to(scripts_dir)))
     files.sort(key=lambda p: p.relative_to(root).as_posix())
     manifest = "".join(
         f"{hashlib.sha256(p.read_text(encoding='utf-8').encode('utf-8')).hexdigest()}"
-        f"  {p.relative_to(skill_dir).as_posix()}\n"
+        f"  {p.relative_to(base).as_posix()}\n"
         for p in files)
     return "sha256:" + hashlib.sha256(manifest.encode("utf-8")).hexdigest()
 

@@ -13,7 +13,7 @@ CREATE TABLE t_order_info (
     UNIQUE KEY uk_order_no (order_no),
     KEY ix_order_status (order_status),
     KEY ix_buyer_id (buyer_id),
-    KEY ix_order_time (create_time),
-    KEY ix_status_buyer (order_status, buyer_id),
-    KEY ix_buyer_time (buyer_id, create_time)
+    KEY ix_create_time (create_time),
+    KEY ix_order_status_buyer_id (order_status, buyer_id),
+    KEY ix_buyer_id_create_time (buyer_id, create_time)
 ) COMMENT = '订单信息表';
