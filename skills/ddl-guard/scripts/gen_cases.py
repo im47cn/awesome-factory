@@ -128,7 +128,9 @@ TEMPLATES = [
      [("    buyer_id        bigint(20)     NOT NULL COMMENT '买家id',\n",
        "".join(f"    f{i:02d}            varchar(20)    NOT NULL COMMENT '字段{i:02d}',\n" for i in range(1, 33)))]),
     ("主键类型", "primary-key-type", "主键类型",
-     [("    id              bigint(20)", "    id              varchar(36)")], None),
+     # id 改 varchar 后必然同时触发必含字段定义不一致（id 须为 int/bigint）
+     [("    id              bigint(20)", "    id              varchar(36)")],
+     None, ["必含字段定义不一致"]),
     ("逻辑删除字段名", "del-flag-name", "逻辑删除字段名",
      [("    del_flag        tinyint(4)", "    is_deleted      tinyint(4)")], None),
     ("逻辑删除字段注释", "del-flag-comment", "逻辑删除字段注释",
@@ -182,29 +184,42 @@ TEMPLATES = [
      [("    order_status    varchar(10)", "    order_code      char(20)")]),
     # ── 索引 ──────────────────────────────────────────────────────────
     ("索引名长度", "index-name-length", "索引名长度",
+     # 65 字符随机名无法满足「索引名含全部字段」，附带期望一并声明
      [("KEY ix_order_status (order_status)",
        "KEY ix_" + "a" * 62 + " (order_status)")],
+     # 边界：恰好 64 字符的合法拼接名（ix_ + 61 字符 body）
      [("KEY ix_order_status (order_status)",
-       "KEY ix_" + "a" * 61 + " (order_status)")]),
+       "KEY ix_last_update_time_order_status_create_time_creator_id_buyer_id "
+       "(last_update_time, order_status, create_time, creator_id, buyer_id)")],
+     ["索引名未包含全部字段"]),
     ("唯一索引命名", "unique-index-name", "唯一索引命名",
-     [("UNIQUE KEY uk_order_no (order_no)", "UNIQUE KEY order_no_uni (order_no)")], None),
+     # 无前缀名恰好等于列拼接，仅违反 uk_ 前缀要求
+     [("UNIQUE KEY uk_order_no (order_no)", "UNIQUE KEY order_no (order_no)")], None),
     ("普通索引命名", "normal-index-name", "普通索引命名",
-     [("KEY ix_order_status (order_status)", "KEY order_status_idx (order_status)")], None),
+     # 无前缀名恰好等于列拼接，仅违反 ix_ 前缀要求
+     [("KEY ix_order_status (order_status)", "KEY order_status (order_status)")], None),
     ("建议唯一索引", "unique-hint", "建议唯一索引",
      [("COMMENT '订单状态'", "COMMENT '订单状态唯一'")], None),
     ("id重复索引", "index-on-id", "id 重复索引",
      [("KEY ix_order_status (order_status)",
-       "KEY ix_order_status (order_status),\n    KEY ix_order_id (id)")], None),
+       "KEY ix_order_status (order_status),\n    KEY ix_id (id)")], None),
     ("索引数量", "index-count", "索引数量",
      [("KEY ix_order_status (order_status)",
-       "KEY ix_order_status (order_status),\n    KEY ix_buyer_id (buyer_id),\n    KEY ix_order_time (create_time),\n    KEY ix_status_buyer (order_status, buyer_id),\n    KEY ix_buyer_time (buyer_id, create_time)")],
+       "KEY ix_order_status (order_status),\n    KEY ix_buyer_id (buyer_id),\n    KEY ix_create_time (create_time),\n    KEY ix_order_status_buyer_id (order_status, buyer_id),\n    KEY ix_buyer_id_create_time (buyer_id, create_time)")],
      [("KEY ix_order_status (order_status)",
-       "KEY ix_order_status (order_status),\n    KEY ix_buyer_id (buyer_id),\n    KEY ix_order_time (create_time),\n    KEY ix_status_buyer (order_status, buyer_id)")]),
+       "KEY ix_order_status (order_status),\n    KEY ix_buyer_id (buyer_id),\n    KEY ix_create_time (create_time),\n    KEY ix_order_status_buyer_id (order_status, buyer_id)")]),
     ("联合索引字段数", "composite-index-width", "联合索引字段数",
+     # 违规：6 列拼接名 59 字符（避免含 id 触发 id重复索引）
+     [("    order_status    varchar(10)    NOT NULL COMMENT '订单状态',",
+       "    order_status    varchar(10)    NOT NULL COMMENT '订单状态',\n"
+       "    biz_no          varchar(20)    NOT NULL COMMENT '业务编号',"),
+      ("KEY ix_order_status (order_status)",
+       "KEY ix_biz_no_order_no_buyer_id_del_flag_creator_id_create_time "
+       "(biz_no, order_no, buyer_id, del_flag, creator_id, create_time)")],
+     # 边界：5 列拼接名 63 字符
      [("KEY ix_order_status (order_status)",
-       "KEY ix_multi (order_status, buyer_id, create_time, last_update_time, del_flag, order_no)")],
-     [("KEY ix_order_status (order_status)",
-       "KEY ix_multi (order_status, buyer_id, create_time, last_update_time, del_flag)")]),
+       "KEY ix_order_status_buyer_id_create_time_last_update_time_del_flag "
+       "(order_status, buyer_id, create_time, last_update_time, del_flag)")]),
 ]
 
 # ── 组合 case：2-3 规则同 case（同一表/文件内同时触发）───────────────────
@@ -224,9 +239,9 @@ COMBO_TEMPLATES = [
       (") COMMENT = '订单信息表';", ");")]),                      # 注释缺失叠加
     ("combo-index-three", "索引命名三连",
      ["唯一索引命名", "普通索引命名", "id重复索引"],
-     [("UNIQUE KEY uk_order_no (order_no)", "UNIQUE KEY order_no_uni (order_no)"),
+     [("UNIQUE KEY uk_order_no (order_no)", "UNIQUE KEY order_no (order_no)"),
       ("KEY ix_order_status (order_status)",
-       "KEY order_status_idx (order_status),\n    KEY ix_order_id (id)")]),
+       "KEY order_status (order_status),\n    KEY ix_id (id)")]),
     ("combo-field-length-start-chars", "字段名长度/开头/字符组合",
      ["字段名长度", "字段名开头"],
      [("order_status", "9rder_status_abcdefghijklmnopqrstuv"),
@@ -246,42 +261,41 @@ COMBO_TEMPLATES = [
 # ── 放行型：全规范 clean 变体（expected 空）──────────────────────────────
 CLEAN_TEMPLATES = [
     ("clean-basic", "全规范基础表",
-     [("-- 订单信息表", "-- 用户账户表"),
-      ("t_order_info", "t_user_account"),
+     [("-- 订单信息表", "-- 用户联系表"),
+      ("t_order_info", "t_user_contact"),
       ("    order_no        varchar(36)    NOT NULL COMMENT '订单编号',",
        "    user_name       varchar(50)    NOT NULL COMMENT '用户名称',"),
       ("    buyer_id        bigint(20)     NOT NULL COMMENT '买家id',",
        "    contact_phone   varchar(20)    NULL COMMENT '联系电话',"),
-      ("'订单信息表'", "'用户账户表'"),
-      ("UNIQUE KEY uk_order_no (order_no)", "UNIQUE KEY uk_user_name (user_name)"),
-      ("KEY ix_order_status (order_status)", "KEY ix_user_status (order_status)")]),
+      ("'订单信息表'", "'用户联系表'"),
+      ("UNIQUE KEY uk_order_no (order_no)", "UNIQUE KEY uk_user_name (user_name)")]),
     ("clean-log-table", "全规范日志表（豁免更新人字段）",
      [("-- 订单信息表", "-- 操作日志表"),
-      ("t_order_info", "t_operate_log"),
+      ("t_order_info", "t_operator_log"),
       ("    order_no        varchar(36)    NOT NULL COMMENT '订单编号',",
-       "    operate_type    varchar(20)    NOT NULL COMMENT '操作类型',"),
+       "    operator_type   varchar(20)    NOT NULL COMMENT '操作类型',"),
       ("    order_status    varchar(10)    NOT NULL COMMENT '订单状态',",
-       "    operate_result  varchar(20)    NOT NULL COMMENT '操作结果',"),
+       "    operator_status varchar(20)    NOT NULL COMMENT '操作状态',"),
       ("    buyer_id        bigint(20)     NOT NULL COMMENT '买家id',",
        "    operator_id     bigint(20)     NOT NULL COMMENT '操作人id',"),
       ("    last_updater_id varchar(36)    NOT NULL COMMENT '最后更新人id',\n", ""),
       ("    last_update_time datetime      NOT NULL COMMENT '最后更新时间',\n", ""),
       ("UNIQUE KEY uk_order_no (order_no)", "UNIQUE KEY uk_creator_id (creator_id)"),
-      ("KEY ix_order_status (order_status)", "KEY ix_operate_result (operate_result)"),
+      ("KEY ix_order_status (order_status)", "KEY ix_operator_status (operator_status)"),
       ("'订单信息表'", "'操作日志表'")]),
     ("clean-index-heavy", "全规范索引密集表",
-     [("-- 订单信息表", "-- 订单明细表"),
-      ("t_order_info", "t_order_detail"),
+     [("-- 订单信息表", "-- 订单商品表"),
+      ("t_order_info", "t_order_goods"),
       ("    order_no        varchar(36)    NOT NULL COMMENT '订单编号',",
        "    order_no        varchar(36)    NOT NULL COMMENT '订单编号',\n"
        "    goods_id        bigint(20)     NOT NULL COMMENT '商品id',\n"
        "    goods_quantity  int(11)        NOT NULL COMMENT '商品数量',\n"
        "    goods_price     decimal(10,2)  NOT NULL COMMENT '商品单价',"),
       ("UNIQUE KEY uk_order_no (order_no)",
-       "UNIQUE KEY uk_order_goods (order_no, goods_id)"),
+       "UNIQUE KEY uk_order_no_goods_id (order_no, goods_id)"),
       ("KEY ix_order_status (order_status)",
-       "KEY ix_goods_quantity (goods_quantity),\n    KEY ix_order_goods_price (goods_price),\n    KEY ix_goods_order (goods_id, order_no)"),
-      ("'订单信息表'", "'订单明细表'")]),
+       "KEY ix_goods_quantity (goods_quantity),\n    KEY ix_goods_price (goods_price),\n    KEY ix_goods_id_order_no (goods_id, order_no)"),
+      ("'订单信息表'", "'订单商品表'")]),
 ]
 
 
@@ -395,12 +409,15 @@ def generate(out_dir: Path, dry_run: bool, verbose: bool) -> tuple:
                 f"  ✗ {cid}: 期望 {want_rules or '∅'} 实际 {actual}")
         return ok
 
-    # 正·原子：每条规则的 violation
-    for rule, cid, title, v_ops, b_ops in TEMPLATES:
+    # 正·原子：每条规则的 violation；可选第 6 元素声明违规模板附带触发的规则
+    for tpl in TEMPLATES:
+        rule, cid, title, v_ops, b_ops, *extra = tpl
+        extra = extra[0] if extra else []
         _emit(f"atomic-{cid}", f"违规-{title}",
-              _v(v_ops)(), [rule], "正·原子", f"规则「{rule}」违规模板")
+              _v(v_ops)(), [rule, *extra], "正·原子", f"规则「{rule}」违规模板")
     # 反·近边界：boundary 与 BASE 不同者
-    for rule, cid, title, v_ops, b_ops in TEMPLATES:
+    for tpl in TEMPLATES:
+        rule, cid, title, v_ops, b_ops, *_ = tpl
         if b_ops:
             _emit(f"boundary-{cid}", f"近边界合规-{title}",
                   _b(b_ops)(), [], "反·近边界", f"规则「{rule}」边界模板")

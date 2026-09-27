@@ -21,11 +21,21 @@ _SHARED = Path(__file__).resolve().parent.parent.parent / "_shared"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
+# 缩略词规范模块（同目录 abbreviations.py）
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
 from guard_lib import (  # noqa: E402
     MYSQL_RESERVED,
     Severity,
     find_files,
     run_gate,
+)
+from abbreviations import (  # noqa: E402
+    LONG_TO_SHORT,
+    iter_abbrev_violations,
+    strip_index_prefix,
 )
 from guard_lib import format_report_json as guard_report_json  # noqa: E402
 
@@ -95,11 +105,18 @@ FORBIDDEN_TYPES = {
 
 # ── 必含字段 ────────────────────────────────────────────────────────────
 REQUIRED_FIELDS = {
-    "id": {"type_pattern": r"(int|bigint)", "desc": "主键id"},
-    "creator_id": {"type_pattern": r"varchar\s*\(\s*36\s*\)", "desc": "创建人id"},
-    "create_time": {"type_pattern": r"datetime", "desc": "创建时间"},
-    "last_updater_id": {"type_pattern": r"varchar\s*\(\s*36\s*\)", "desc": "最后更新人id"},
-    "last_update_time": {"type_pattern": r"datetime", "desc": "最后更新时间"},
+    "id": {"type_pattern": r"^(int|bigint)(\s*\(\s*\d+\s*\))?$", "desc": "主键id"},
+    "creator_id": {"type_pattern": r"^varchar\s*\(\s*36\s*\)$", "desc": "创建人id"},
+    "create_time": {"type_pattern": r"^datetime$", "desc": "创建时间"},
+    "last_updater_id": {"type_pattern": r"^varchar\s*\(\s*36\s*\)$", "desc": "最后更新人id"},
+    "last_update_time": {"type_pattern": r"^datetime$", "desc": "最后更新时间"},
+}
+
+# ── 缩写检查豁免字段名（公司规范字段名）────────────────────────────────
+# 这些字段名虽然命中缩写字典的某些分词，但作为项目规范字段名保留长写法
+# （避免 del_flag→del 等拆词副作用引起的误报）
+ABBREVIATION_EXEMPT_FIELDS = {
+    "del_flag",       # 逻辑删除标志（标准字段名）
 }
 
 # ── 泛化字段名（缺乏主体区分的单一名词，应加前缀）──────────────────────
@@ -108,12 +125,9 @@ GENERIC_FIELD_NAMES = {
 }
 
 # ── 缩写字典：未规范化写法 → 标准缩写（与规范附录同步）──────────────────
+# 数据源：本目录 abbreviations.py（LONG_TO_SHORT）。如需扩展仅修改该模块。
 # 注意：标准缩写不得为 MySQL 保留字（如 desc），否则建议本身即触发强制违规
-ABBREVIATION_DICT = {
-    "direction": "dir", "message": "msg", "config": "cfg",
-    "information": "info", "number": "no", "count": "cnt", "image": "img",
-    "telephone": "tel", "address": "addr", "password": "pwd", "method": "mtd",
-}
+ABBREVIATION_DICT = LONG_TO_SHORT
 
 # ── 日志/流水表标识（表名含此子串者豁免更新人字段）─────────────────────
 LOG_TABLE_TAGS = ("_log", "_flow", "_journal")
@@ -126,14 +140,60 @@ def _is_log_table(name: str) -> bool:
 
 
 def _check_abbreviation(name: str, owner: str, issues: list, kind: str = "字段"):
-    """检测名称分词是否命中缩写字典的未规范化写法，提示改用标准缩写。"""
-    for part in name.lower().split("_"):
-        if part in ABBREVIATION_DICT:
-            std = ABBREVIATION_DICT[part]
+    """检测名称分词是否命中缩写字典的未规范化写法。
+
+    数据源：abbreviations.LONG_TO_SHORT（长写法 → 标准缩写）。
+
+    【强制级别：公司数据治理要求】命中即报 Severity.MANDATORY，ddl_check.py
+    退出码 1（CI 拦截）。已用标准缩写时不触发（value 不在反向检查范围）。
+
+    豁免：必含字段名（id/creator_id/create_time/last_updater_id/last_update_time）
+    是公司基线硬性要求，字段名长度与写法已固化，缩写规则对此类字段名不做强制收敛。
+    其他规范字段名（如 del_flag）同样豁免。
+    """
+    if name.lower() in REQUIRED_FIELDS or name.lower() in ABBREVIATION_EXEMPT_FIELDS:
+        return  # 必含字段名 / 规范字段名豁免缩写检查
+    issues.extend(Issue(
+        table=owner, severity=Severity.MANDATORY, rule="缩写未规范化",
+        location=f"{kind}:{name}", description=f"{kind} '{name}' 含未规范化写法 '{part}'",
+        suggestion=f"改用标准缩写 '{part}' → '{std}'",
+    ) for part, std in iter_abbrev_violations(name))
+
+
+def _index_col_name(col: str) -> str:
+    """提取索引列定义中的列标识符，忽略前缀长度（`name(10)`）与 `DESC` 等修饰。"""
+    m = re.match(r"`?([A-Za-z0-9_]+)`?", col.strip())
+    return m[1].lower() if m else col.lower()
+
+
+def _check_index_abbreviation(table: TableInfo, idx: IndexInfo, issues: list):
+    """索引缩写检查：对索引引用的每个列名做反向命中检查。
+
+    【强制级别：公司数据治理要求】命中即报 Severity.MANDATORY。
+
+    逐列检查（而非拆索引名分词）：组合索引（如 ix_mch_id_last_update_time）
+    的必含字段列（如 last_update_time 含 `update` 分词）逐列豁免，避免与
+    `索引名未包含全部字段`（要求索引名按完整字段名拼接）两条强制规则互相矛盾。
+
+    豁免：列名属于必含字段名（REQUIRED_FIELDS）或规范字段名
+    （ABBREVIATION_EXEMPT_FIELDS，如 del_flag）。索引名与列名的一致性由
+    check_index_contains_columns 负责，此处只检查列名本身的缩写。
+    """
+    exempt_set = set(REQUIRED_FIELDS.keys()) | ABBREVIATION_EXEMPT_FIELDS
+    seen: set[tuple[str, str]] = set()
+    for col in idx.columns:
+        col_low = _index_col_name(col)
+        if col_low in exempt_set:
+            continue  # 必含字段 / 规范字段逐列豁免（支持组合索引）
+        for part, std in iter_abbrev_violations(col_low):
+            if (part, std) in seen:
+                continue  # 多列命中同一违规时去重
+            seen.add((part, std))
             issues.append(Issue(
-                table=owner, severity=Severity.RECOMMENDED, rule="缩写未规范化",
-                location=f"{kind}:{name}", description=f"{kind} '{name}' 含未规范化写法 '{part}'",
-                suggestion=f"建议使用标准缩写 '{part}' → '{std}'",
+                table=table.name, severity=Severity.MANDATORY, rule="索引缩写未规范化",
+                location=f"表:{table.name} 索引:{idx.name}",
+                description=f"索引 '{idx.name}' 列 '{col_low}' 分词 '{part}' 含未规范化写法",
+                suggestion=f"改用标准缩写 '{part}' → '{std}'，并同步索引名",
             ))
 
 
@@ -700,17 +760,48 @@ def check_table_comment(table: TableInfo, issues: list):
 
 
 def check_required_fields(table: TableInfo, issues: list):
-    """Check for required system fields."""
-    field_names = {f.name.lower() for f in table.fields}
+    """Check for required system fields.
+
+    强制要求：每个表必须包含 id/creator_id/create_time/last_updater_id/
+    last_update_time 五个字段，且这四个非主键字段的**注释必须与规范完全一致**
+    （creator_id → 创建人id、create_time → 创建时间、last_updater_id →
+    最后更新人id、last_update_time → 最后更新时间）。日志/流水表仅强制
+    id 与 create_time，豁免更新人字段。
+    """
+    field_by_name = {f.name.lower(): f for f in table.fields}
 
     # 日志/流水表仅强制 id 与 create_time，豁免更新人字段
     required = {"id", "create_time"} if _is_log_table(table.name) else set(REQUIRED_FIELDS.keys())
     for req_name in required:
-        if req_name not in field_names:
+        if req_name not in field_by_name:
             issues.append(Issue(
                 table=table.name, severity=Severity.MANDATORY, rule="必含字段缺失",
                 location=f"表:{table.name}", description=f"缺少必含字段 '{req_name}'",
                 suggestion=f"新表必须包含字段: {req_name}",
+            ))
+            continue
+        # 已存在的字段：检查类型 + 注释是否完全一致
+        f = field_by_name[req_name]
+        spec = REQUIRED_FIELDS[req_name]
+        # 类型正则（type_pattern 自带 ^...$ 锚点,fullmatch 做完整字符串校验,
+        # 避免 `int` 误匹配 `point`、`datetime` 误匹配 `default` 等子串污染）
+        if not re.fullmatch(spec["type_pattern"], f.type or "", re.IGNORECASE):
+            issues.append(Issue(
+                table=table.name, severity=Severity.MANDATORY, rule="必含字段定义不一致",
+                location=f"表:{table.name} 字段:{req_name}",
+                description=f"必含字段 '{req_name}' 类型 '{f.type}' 与规范不符",
+                suggestion=f"应匹配类型正则 '{spec['type_pattern']}'（示例：varchar(36) / datetime）",
+            ))
+        # 注释必须完全一致（空白不敏感：内部多余空格容错，对中文注释友好）
+        expected_comment = spec["desc"]
+        actual_comment = re.sub(r"\s+", "", f.comment or "")
+        expected_normalized = re.sub(r"\s+", "", expected_comment)
+        if actual_comment != expected_normalized:
+            issues.append(Issue(
+                table=table.name, severity=Severity.MANDATORY, rule="必含字段注释不一致",
+                location=f"表:{table.name} 字段:{req_name}",
+                description=f"必含字段 '{req_name}' 注释为 '{f.comment}'，与规范不符",
+                suggestion=f"必须改为规范注释 '{expected_comment}'",
             ))
 
 
@@ -817,6 +908,44 @@ def check_field_comment(field: FieldInfo, table_name: str, issues: list):
             suggestion="格式：中文名(补充信息)[枚举信息]，如 '父参数id(0=根,支持嵌套)'",
         ))
 
+    # R2: 取值范围 [k-v,...] 格式（COL033）——所有 [..] 段逐一校验
+    kv_pattern = re.compile(
+        r"^[\w\u4e00-\u9fff]+[-=][^\[\],()\s]+(?:\s*,\s*[\w\u4e00-\u9fff]+[-=][^\[\],()\s]+)*\s*$"
+    )
+    for bracket_match in re.finditer(r"\[([^\[\]]*)\]", comment):
+        bracket_content = bracket_match.group(1).strip()
+        if not bracket_content:
+            continue
+        # 排除字符集：不允许多个 k-v 间无逗号（空格代替）、value 含括号或空白
+        if not kv_pattern.match(bracket_content):
+            issues.append(Issue(
+                table=table_name, severity=Severity.MANDATORY, rule="注释取值范围格式",
+                location=f"表:{table_name} 字段:{field.name}",
+                description=f"取值范围 '[{bracket_content}]' 不符合 k-v 格式",
+                suggestion="格式：[k1-v1,k2-v2,...]，如 [10-待支付,20-已支付,30-已完成]",
+            ))
+
+    # R3: 补充信息 () 语法粗略检查（COL034）——所有 (..) 段逐一校验
+    # 补充信息不能与字段名主体重复（粗略判断：若括号内包含字段名的完整翻译视为冗余）
+    # 精确语义判断（"订单编号(订单号)"中"订单号"是"订单编号"的同义重复）由 AI 兜底
+    main_text = comment.split("(", 1)[0].strip().split("[", 1)[0].strip()
+    for paren_match in re.finditer(r"\(([^()]*)\)", comment):
+        paren_content = paren_match.group(1).strip()
+        if not paren_content:  # 补充信息不能为空
+            issues.append(Issue(
+                table=table_name, severity=Severity.MANDATORY, rule="补充信息为空",
+                location=f"表:{table_name} 字段:{field.name}",
+                description="补充信息圆括号内为空",
+                suggestion="补充信息应包含必要的额外说明，如 '父参数id(0=根)'",
+            ))
+        elif main_text and paren_content == main_text:
+            issues.append(Issue(
+                table=table_name, severity=Severity.MANDATORY, rule="补充信息冗余",
+                location=f"表:{table_name} 字段:{field.name}",
+                description=f"补充信息 '({paren_content})' 与主标题 '{main_text}' 完全相同",
+                suggestion="补充信息应为必要的额外说明，不应与主标题重复",
+            ))
+
 
 def check_field_type(field: FieldInfo, table_name: str, issues: list):
     """Check for forbidden field types."""
@@ -907,7 +1036,7 @@ def check_index_naming(table: TableInfo, issues: list):
         if len(idx.name) > 64:
             issues.append(Issue(
                 table=table.name, severity=Severity.MANDATORY, rule="索引名长度",
-                location=f"表:{table.name} 索引:{idx.name}", 
+                location=f"表:{table.name} 索引:{idx.name}",
                 description=f"索引名长度 {len(idx.name)} 超过 64",
                 suggestion="索引名长度不超过 64",
             ))
@@ -916,7 +1045,7 @@ def check_index_naming(table: TableInfo, issues: list):
         if idx.is_unique and not idx.name.lower().startswith("uk_"):
             issues.append(Issue(
                 table=table.name, severity=Severity.MANDATORY, rule="唯一索引命名",
-                location=f"表:{table.name} 索引:{idx.name}", 
+                location=f"表:{table.name} 索引:{idx.name}",
                 description=f"唯一索引 '{idx.name}' 未以 uk_ 开头",
                 suggestion="唯一索引命名规则: uk_字段列表",
             ))
@@ -928,6 +1057,36 @@ def check_index_naming(table: TableInfo, issues: list):
                 location=f"表:{table.name} 索引:{idx.name}",
                 description=f"普通索引 '{idx.name}' 未以 ix_ 开头",
                 suggestion="普通索引命名规则: ix_字段列表",
+            ))
+
+        # 索引主体分词缩写（强制级：公司数据治理要求）
+        _check_index_abbreviation(table, idx, issues)
+
+
+def check_index_contains_columns(table: TableInfo, issues: list):
+    """索引名主体必须等于其列标识符按声明顺序的全名拼接，不允许缩写。
+
+    例：`ix_mch_id_msg_type_status (mch_id, msg_type, status)` 合法；
+    `ix_mch_msg_type_status (mch_id, msg_type, status)` 违规——`mch_id` 被
+    缩写为 `mch`。比较为精确拼接（顺序与 token 集合都必须一致）；列标识符
+    提取时忽略前缀长度（`name(10)`）与 `ASC`/`DESC` 等索引修饰。
+    """
+    for idx in table.indexes:
+        if idx.name == "PRIMARY":
+            continue
+
+        body = strip_index_prefix(idx.name)
+        expected = "_".join(_index_col_name(c) for c in idx.columns)
+        if body != expected:
+            issues.append(Issue(
+                table=table.name,
+                severity=Severity.MANDATORY,
+                rule="索引名未包含全部字段",
+                location=f"表:{table.name} 索引:{idx.name}",
+                description=(
+                    f"索引 '{idx.name}' 主体 '{body}' 不等于列顺序拼接 '{expected}'"
+                ),
+                suggestion="索引名由字段全名称按 <prefix>_<field1>_<field2>... 顺序拼接而成（prefix 为 ix/uk），不允许缩写、调换顺序或含额外 token",
             ))
 
 
@@ -1063,6 +1222,7 @@ def check_file(file_path: str) -> list:
             check_varchar_length(field, table.name, issues)
 
         check_index_naming(table, issues)
+        check_index_contains_columns(table, issues)
         check_unique_hint(table, issues)
         check_index_on_id(table, issues)
         check_index_count(table, issues)

@@ -19,10 +19,9 @@
     "api-guard": "sha256:d9b2b3db1fce8928f96b8f709eafc0cb39b6d464838870fb8a5ef0a52e6e62dc",
     "arch-guard": "sha256:6f137baf06b7e63171416b2566e7eea62a58ddeeeb65597e274a45d28403e77d",
     "contract-guard": "sha256:cac0f758c37b75d8c507a394ff34735dcb0d410e00e1ec5b033e48f6c76a8749",
-    "ddl-guard": "sha256:fd42bac1ff966a678d47483a19f3f9e0970fac3920bd4169bf5712084fbaee77",
-    "doc-gen": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ddl-guard": "sha256:b75ba79a407d81f015dfe1f20c27953beb3918bde17d11130161edb859d562d8",
     "impact-guard": "sha256:b38d0d00db6470eeba857cc558659e59e03b7a95bed2bc5abbf388fdba4b6d5a",
-    "skill-evo": "sha256:84688c8d57bcceb6c9310e5e42a93132a4b50bb3f4e2d67a70afb3729edd6f1f",
+    "skill-evo": "sha256:d2dff06a3f445b16e41999fdf7a60c445d3712541fab3d1f86b6e200b338e6e6",
     "task-flow": "sha256:9ecdca4ec05040d04fbe0414bb8248d17371425b5dafa130f4571ab8d72bdf11",
     "work-report": "sha256:f0207bf9db034e059e83bbd57c78ded688ed63c05e82164bf8e81c43be08e9cb"
   }

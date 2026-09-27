@@ -903,6 +903,19 @@ def test_skill_content_hash_deterministic_order(tmp_path):
         f"{hashlib.sha256(b'B').hexdigest()}  scripts/b.py\n")
     want = f"sha256:{hashlib.sha256(manifest.encode('utf-8')).hexdigest()}"
     assert R.skill_content_hash("demo", root=tmp_path) == want
+    # 派生产物不扰动指纹（A 路同口径：coverage/ruff/pytest/解释器生灭物）
+    (skill / "scripts" / ".coverage").write_bytes(b"SQLite format 3\x00")
+    (skill / "scripts" / ".ruff_cache" / "0.16.8").mkdir(parents=True)
+    (skill / "scripts" / ".ruff_cache" / "0.16.8" / "abc").write_bytes(b"\x00")
+    (skill / "scripts" / "__pycache__").mkdir()
+    (skill / "scripts" / "__pycache__" / "x.pyc").write_bytes(b"\xff\xfe")
+    (skill / "scripts" / ".pytest_cache").mkdir()
+    (skill / "scripts" / ".pytest_cache" / "c").write_bytes(b"\x00")
+    (skill / "scripts" / ".DS_Store").write_bytes(b"\x00\x00Bud1")
+    assert R.skill_content_hash("demo", root=tmp_path) == want
+    # 真实源文件增删 → hash 变化（路径与内容均参与）
+    (skill / "scripts" / "c.py").write_text("x", encoding="utf-8")
+    assert R.skill_content_hash("demo", root=tmp_path) != want
     # SKILL.md 缺失 → fail-closed
     (skill / "SKILL.md").unlink()
     try:

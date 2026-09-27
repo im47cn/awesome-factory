@@ -12,5 +12,5 @@ CREATE TABLE t_order_info (
     PRIMARY KEY (id),
     UNIQUE KEY uk_order_no (order_no),
     KEY ix_order_status (order_status),
-    KEY ix_order_id (id)
+    KEY ix_id (id)
 ) COMMENT = '订单信息表';

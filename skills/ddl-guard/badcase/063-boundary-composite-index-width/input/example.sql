@@ -11,5 +11,5 @@ CREATE TABLE t_order_info (
     buyer_id        bigint(20)     NOT NULL COMMENT '买家id',
     PRIMARY KEY (id),
     UNIQUE KEY uk_order_no (order_no),
-    KEY ix_multi (order_status, buyer_id, create_time, last_update_time, del_flag)
+    KEY ix_order_status_buyer_id_create_time_last_update_time_del_flag (order_status, buyer_id, create_time, last_update_time, del_flag)
 ) COMMENT = '订单信息表';

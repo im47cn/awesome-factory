@@ -176,6 +176,12 @@ class TestContentHashContract:
         (scripts / "__pycache__" / "run.cpython-314.pyc").write_bytes(
             b"\xcb\x0d\x0d\x0a")
         (scripts / ".DS_Store").write_bytes(b"\x00\x00\x00Bud1")
+        # 2026-09-24 PR #237 push 被拦实证：coverage 写 .coverage（SQLite
+        # 二进制）、ruff 写 .ruff_cache/<ver>/<hash>，同属本地生灭物
+        (scripts / ".coverage").write_bytes(b"SQLite format 3\x00\xbb\xa1")
+        ruff = scripts / ".ruff_cache" / "0.16.8"
+        ruff.mkdir(parents=True)
+        (ruff / "11728694205254252146").write_bytes(b"\x00\x01\x02cache")
         nested = scripts / "sub" / "__pycache__"
         nested.mkdir(parents=True)
         (nested / "x.cpython-314.pyc").write_bytes(b"\xff\xfe")
@@ -199,6 +205,27 @@ class TestContentHashContract:
         run.write_text("print('changed')\n", encoding="utf-8")
         assert (compute_content_hash(hostile, "demo")
                 != compute_content_hash(tmp_path, "demo"))
+
+    def test_b_path_evo_replay_hash_identical(self):
+        # A/B 双算对拍：B 路 evo_replay.skill_content_hash（自包含分发故独立
+        # 实现）必须与本路 compute_content_hash 对同一技能内容产出完全相同
+        # 的指纹。2026-09-24 前两路算法漂移（字节拼接 vs manifest）无锚点
+        # 拦截——本测试是唯一跨实现一致性守卫。
+        import importlib.util
+        repo = Path(__file__).resolve().parents[2]
+        evo_scripts = repo / "skills" / "skill-evo" / "scripts"
+        sys.path.insert(0, str(evo_scripts))
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "evo_replay_crosscheck", evo_scripts / "evo_replay.py")
+            assert spec and spec.loader
+            evo_replay = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(evo_replay)
+        finally:
+            sys.path.remove(str(evo_scripts))
+        for skill in discover_evidence_skills(repo):
+            assert (evo_replay.skill_content_hash(skill, root=repo)
+                    == compute_content_hash(repo, skill)), skill
 
     def test_discovery_only_skills_with_scripts(self, tmp_path):
         make_skill(tmp_path, "alpha")

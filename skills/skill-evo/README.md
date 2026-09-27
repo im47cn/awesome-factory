@@ -91,7 +91,8 @@ prompt 不嵌候选文本，改为指令 Agent 用 Read 工具完整读取部署
 证据产物（跨路契约，schema `replay-evidence/1`；`artifacts/` 默认 gitignore，
 唯 `replay-evidence/` 豁免——登记后的真实证据可入库）：
 `skills/skill-evo/artifacts/replay-evidence/<skill>.json`，字段顺序固定
-`schema/skill/content_hash（SKILL.md+scripts 字节级指纹）/generated_at/k/
+`schema/skill/content_hash（SKILL.md+scripts 逐文件摘要清单指纹，排除派生
+产物，与 release_guard 同一算法、双算对拍锚定）/generated_at/k/
 pass_at_k/pass_cap_k/invocation/cases（整数计数）`；逐 case 明细走 CLI stdout。
 写入方两个：dry-run 冒烟入口（零 LLM）与 `evo.py evolve --skill` GEPA 结束后
 的部署态证据 pass（stream-json 实测 `cmd_evidence_llm`；`replay_evidence=False`

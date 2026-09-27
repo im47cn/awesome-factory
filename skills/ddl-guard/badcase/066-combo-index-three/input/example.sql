@@ -10,7 +10,7 @@ CREATE TABLE t_order_info (
     order_status    varchar(10)    NOT NULL COMMENT '订单状态',
     buyer_id        bigint(20)     NOT NULL COMMENT '买家id',
     PRIMARY KEY (id),
-    UNIQUE KEY order_no_uni (order_no),
-    KEY order_status_idx (order_status),
-    KEY ix_order_id (id)
+    UNIQUE KEY order_no (order_no),
+    KEY order_status (order_status),
+    KEY ix_id (id)
 ) COMMENT = '订单信息表';

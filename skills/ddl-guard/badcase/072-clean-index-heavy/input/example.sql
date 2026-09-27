@@ -1,5 +1,5 @@
--- 订单明细表
-CREATE TABLE t_order_detail (
+-- 订单商品表
+CREATE TABLE t_order_goods (
     id              bigint(20)     NOT NULL COMMENT '主键id',
     order_no        varchar(36)    NOT NULL COMMENT '订单编号',
     goods_id        bigint(20)     NOT NULL COMMENT '商品id',
@@ -13,8 +13,8 @@ CREATE TABLE t_order_detail (
     order_status    varchar(10)    NOT NULL COMMENT '订单状态',
     buyer_id        bigint(20)     NOT NULL COMMENT '买家id',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_order_goods (order_no, goods_id),
+    UNIQUE KEY uk_order_no_goods_id (order_no, goods_id),
     KEY ix_goods_quantity (goods_quantity),
-    KEY ix_order_goods_price (goods_price),
-    KEY ix_goods_order (goods_id, order_no)
-) COMMENT = '订单明细表';
+    KEY ix_goods_price (goods_price),
+    KEY ix_goods_id_order_no (goods_id, order_no)
+) COMMENT = '订单商品表';

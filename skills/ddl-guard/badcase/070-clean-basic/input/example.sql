@@ -1,5 +1,5 @@
--- 用户账户表
-CREATE TABLE t_user_account (
+-- 用户联系表
+CREATE TABLE t_user_contact (
     id              bigint(20)     NOT NULL COMMENT '主键id',
     user_name       varchar(50)    NOT NULL COMMENT '用户名称',
     creator_id      varchar(36)    NOT NULL COMMENT '创建人id',
@@ -11,5 +11,5 @@ CREATE TABLE t_user_account (
     contact_phone   varchar(20)    NULL COMMENT '联系电话',
     PRIMARY KEY (id),
     UNIQUE KEY uk_user_name (user_name),
-    KEY ix_user_status (order_status)
-) COMMENT = '用户账户表';
+    KEY ix_order_status (order_status)
+) COMMENT = '用户联系表';

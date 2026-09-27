@@ -132,8 +132,9 @@ def interval_commits(base: str | None) -> list[dict]:
 #   content_hash = sha256( 逐文件摘要清单；条目 = "<文件内容 sha256 hex>␣␣<skill 内相对 posix 路径>\n"，
 #                          按路径字典序排列后整体拼接——路径与边界参与哈希，
 #                          文件改名/增删/跨文件内容重排（"ab"+"c" vs "a"+"bc"）均改变 hash )
-#   文件面       = SKILL.md + scripts/**，排除派生产物（.pytest_cache/、__pycache__/、
-#                  *.pyc、.DS_Store）——本地测试生灭物不得扰动指纹（2026-09-21 事故）
+#   文件面       = SKILL.md + scripts/**，排除派生产物（.pytest_cache/、__pycache__、
+#                  *.pyc、.DS_Store、.coverage、.ruff_cache/）——本地测试生灭物
+#                  不得扰动指纹（2026-09-21 事故；2026-09-24 PR #237 增补后两项）
 #   evidence     = skills/skill-evo/artifacts/replay-evidence/<skill>.json
 # ---------------------------------------------------------------------------
 
@@ -143,7 +144,8 @@ _CONTENT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SKIP_ENV = "RELEASE_EVIDENCE_SKIP"
 
 
-_DERIVED_PARTS = frozenset({".pytest_cache", "__pycache__", ".DS_Store"})
+_DERIVED_PARTS = frozenset({".pytest_cache", "__pycache__", ".DS_Store",
+                            ".coverage", ".ruff_cache"})
 _DERIVED_SUFFIXES = (".pyc",)
 
 
@@ -151,7 +153,8 @@ def _is_derived(path: Path) -> bool:
     """派生产物判定：任一路径段命中缓存/系统目录名，或 *.pyc 后缀。
 
     这些文件随本地测试运行生灭（pytest 写 .pytest_cache/、解释器写
-    __pycache__/*.pyc、Finder 写 .DS_Store），不属于 skill 源文件面，
+    __pycache__/*.pyc、Finder 写 .DS_Store、coverage 写 .coverage、
+    ruff 写 .ruff_cache/），不属于 skill 源文件面，
     计入哈希会让指纹随工作区卫生状况漂移（2026-09-21 plugin_lock
     全红事故：重锁时缓存被静默吞入锁定值）。其余未知二进制不在排除
     之列，仍由读取期 UTF-8 校验干净拦截。
