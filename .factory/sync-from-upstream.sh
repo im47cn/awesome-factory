@@ -285,7 +285,7 @@ PY
         printf '# factory: 上游同步追平（%s）\n%s\n' "${HEAD_SHA:0:9}" "$PREV_SYNC" >> "$IGNORE"
         git -C "$REPO" add -- "$IGNORE"
       fi
-      git -C "$REPO" commit -q -m "factory: 上游同步追平（${HEAD_SHA:0:9}）"
+      git -C "$REPO" commit -q -m "chore(factory): 上游同步追平（${HEAD_SHA:0:9}）"
       echo "已提交: $(git -C "$REPO" rev-parse --short HEAD)（当前分支，不推送）"
     fi
     # 无条件设置（幂等，绝对路径）：无变更分支此前直接跳过，文件在而
