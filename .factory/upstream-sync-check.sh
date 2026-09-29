@@ -125,7 +125,7 @@ print(json.loads(open(sys.argv[1]).read())["anchor"][:9])' "$LOCK")"
   git commit -qm "chore(factory): 上游同步追平 ${ANCHOR}（M2 确定性 PR 流）"
   git push -q --no-verify origin "HEAD:refs/heads/${BR}"
   # base 显式（PR #116 拒猜 + #133 收口）：两级解析值，不猜默认
-  PR_URL="$(${HOST} pr create --head "$BR" --title "factory: 上游同步追平（${ANCHOR}）" \
+  PR_URL="$(${HOST} pr create --head "$BR" --title "chore(factory): 上游同步追平（${ANCHOR}）" \
     --base "${BASE_BRANCH}" \
     --label factory:needs-review \
     --body "M2 确定性 PR 流（设计 §11.2）：full 面漂移自动追平，机器执行、人工合并。
