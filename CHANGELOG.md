@@ -2,6 +2,86 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.8.0](https://github.com/im47cn/awesome-rules/compare/v0.7.1...v0.8.0) (2026-09-29)
+
+### ✨ 新功能
+
+* **ddl-guard:** 添加缩略词规范检查和索引命名规则 ([1923b74](https://github.com/im47cn/awesome-rules/commit/1923b74daccc7d1695f16c8ca7933efea6667b95))
+* **ddl-guard:** 缩写规则强制升级 + 必含字段一致性 + 注释格式规范 ([2a9b435](https://github.com/im47cn/awesome-rules/commit/2a9b4354c0fe6a33298df666efcd98d8f08ea84c))
+* **guard:** 发布门禁绑定评测证据内容 hash（fail-closed） ([94bd240](https://github.com/im47cn/awesome-rules/commit/94bd240b84c7801fc3fb169c13a673de850704c2)), references [#4](https://github.com/im47cn/awesome-rules/issues/4)
+* **scripts:** release_guard 证据门改登记集驱动（EVIDENCE_ENROLLED） ([d8d564d](https://github.com/im47cn/awesome-rules/commit/d8d564d031fdcb5dbb4efb53f9b4b2925226ab23))
+* **skill-evo:** apply 前置 approved 状态校验，审批红线升级为状态机强制 ([#247](https://github.com/im47cn/awesome-rules/issues/247)) ([778b26b](https://github.com/im47cn/awesome-rules/commit/778b26b2950852651c68dec054c2c92d529a253c))
+* **skill-evo:** evo.py 接线部署态 replay 证据 pass（stream-json 实测） ([b39b8c0](https://github.com/im47cn/awesome-rules/commit/b39b8c095b657ddf4790a7a7d46fd74b8644e181))
+* **skill-evo:** replay 评估升级 pass@k/pass^k + 双 Agent 多轮 + 调用证据硬门禁 ([cb8295f](https://github.com/im47cn/awesome-rules/commit/cb8295f6d9c855b5593ba455e6f4f31a80fe9028)), references [2/#3](https://github.com/im47cn/awesome-rules/issues/3)
+* **skills:** task-flow 五阶段门驱任务工作流运行时 ([81aac5c](https://github.com/im47cn/awesome-rules/commit/81aac5c676f8217dfd939d75dd8ea7b03ae593e1)), references [#5](https://github.com/im47cn/awesome-rules/issues/5)
+
+### 🐛 Bug 修复
+
+* **ddl-guard:** badcase 001 夹具补合规 del_flag（strict-exact 连带新规则命中） ([a705603](https://github.com/im47cn/awesome-rules/commit/a7056035c54a46561892347b45a4bced6bafbfb6))
+* **ddl-guard:** badcase 075 表名 check 分词命中表名缩写新规（语义冲突），改 t_order_del_probe 保持原子单规则 ([d4e1310](https://github.com/im47cn/awesome-rules/commit/d4e1310ff17f24227a2c31fc5c230ef746db57ef))
+* **ddl-guard:** CodeRabbit 第二轮 4 条——缩写链折叠到终点/索引缩写 Issue 填表名/R1 字典用途表述/replay-evidence 走正式入口重生成 ([6caf642](https://github.com/im47cn/awesome-rules/commit/6caf642100ef853f5f8c34989d185c13fb73b27d))
+* **ddl-guard:** eval 语料与新缩写治理对齐——007-clean 表名 account→acct（零检出）、008-real expected 补声明 4 类新规则，dry-run pass@k 1.0 ([dc91d94](https://github.com/im47cn/awesome-rules/commit/dc91d94e3895b04b2698095cb6527ce7158f3e28))
+* **ddl-guard:** pre-review 反馈修复（编号/总览表/命名/dead-code/措辞） ([402f1f7](https://github.com/im47cn/awesome-rules/commit/402f1f7332606634a29cf7058eb2c44deec26f72))
+* **ddl-guard:** strip_index_prefix 收敛为条件表达式 ([3dc83ba](https://github.com/im47cn/awesome-rules/commit/3dc83baf8bc25a2dfcf36d199c0518a6f8b5ed44))
+* **ddl-guard:** 修 CodeRabbit/Sourcery 评审反馈：缩写最长匹配 + 索引规则一致性 + 注释多段校验 ([fb36dad](https://github.com/im47cn/awesome-rules/commit/fb36dad65204560330a6fcfc07873f301b7b7d45))
+* **ddl-guard:** 修 Sourcery review 反馈的 3 个 bug + 加 4 个回归测试 ([e06780d](https://github.com/im47cn/awesome-rules/commit/e06780d5454f49db511a3a9d30ae5dab5bbf1583))
+* **ddl-guard:** 手工落地 sourcery review --fix 四条建议 ([2aecc8f](https://github.com/im47cn/awesome-rules/commit/2aecc8f3fe758c16f5c7f3076824f352799d2c09))
+* **factory:** fix-issue 基线分支两级解析，去掉固定回退 main（[#133](https://github.com/im47cn/awesome-rules/issues/133)） ([688a74f](https://github.com/im47cn/awesome-rules/commit/688a74f4344d255fbff3ece87318e95a18ae0254))
+* **factory:** hosting CLI --repo slug 形态须 FACTORY_HOSTING 锚定（[#134](https://github.com/im47cn/awesome-rules/issues/134)） ([c0bed99](https://github.com/im47cn/awesome-rules/commit/c0bed994018e08107b4465ffe63f333d1a8eb22e))
+* **factory:** run.py 入 full 面后宿主专名中性化 ([22013dc](https://github.com/im47cn/awesome-rules/commit/22013dc6090988df18eb549bd3329625b323a2fe))
+* **factory:** upstream-sync-check 基线分支同构拒猜收口（[#133](https://github.com/im47cn/awesome-rules/issues/133) 遗留） ([45ecf41](https://github.com/im47cn/awesome-rules/commit/45ecf41ea28a493ad518248af4b8396640693d20))
+* **factory:** 分发清单补漏 + sourcery 闸测试可移植 ([3f81f59](https://github.com/im47cn/awesome-rules/commit/3f81f59415c1c41aa2996e51cac4d46199ba1103))
+* **guard:** 评审修复——content_hash manifest 化、发布路径禁用 skip 逃逸等 4 项 ([b5f56b7](https://github.com/im47cn/awesome-rules/commit/b5f56b7c94cd8ba27664a7462f677ddae44c8262)), references [#228](https://github.com/im47cn/awesome-rules/issues/228)
+* **scripts:** _is_derived 按 scripts_dir 相对段判定派生产物 ([0b37506](https://github.com/im47cn/awesome-rules/commit/0b3750640a5df6b2b9e925a89cf1f6f9cd8478b5)), references [#229](https://github.com/im47cn/awesome-rules/issues/229)
+* **scripts:** content_hash 哈希面排除派生产物，重锁 evidence 指纹 ([b69df74](https://github.com/im47cn/awesome-rules/commit/b69df74efe94fc3440d276fb7343e608c822dc78)), references [#228](https://github.com/im47cn/awesome-rules/issues/228)
+* **skill-evo:** _DERIVED_PARTS 对齐 frozenset + _DERIVED_SUFFIXES 常量形状 ([7cc3031](https://github.com/im47cn/awesome-rules/commit/7cc303187aed6f83f1659c5cd68d4d1aa27196da))
+* **skill-evo:** _DERIVED_PARTS 提为模块常量（sourcery move-assign） ([c4b6b37](https://github.com/im47cn/awesome-rules/commit/c4b6b37aaf244d959654501cc331ea2edc9e381b))
+* **skill-evo:** B 路 skill_content_hash 对齐 A 路 manifest 算法 ([41f9f26](https://github.com/im47cn/awesome-rules/commit/41f9f26348162c8e65d555d40e1cff58a630d573))
+* **skill-evo:** dry-run 冒烟拒绝覆写真实 stream-json 证据（fail-closed） ([0e9bf0b](https://github.com/im47cn/awesome-rules/commit/0e9bf0bf402e5a657bce7926501641ab45516dff))
+* **skill-evo:** replay 证据 content_hash 对齐 release_guard 契约，排除派生产物 ([#247](https://github.com/im47cn/awesome-rules/issues/247)) ([09ac71d](https://github.com/im47cn/awesome-rules/commit/09ac71d8d180543b66ea5d8c31cbbcc0151a50ed)), references [#229](https://github.com/im47cn/awesome-rules/issues/229)
+* **skill-evo:** 证据 pass 透传 --eval 评估集，与 GEPA 同源 ([7b9097a](https://github.com/im47cn/awesome-rules/commit/7b9097a57c8e1f93a977bff1d949860d8a1fa03a)), references [#233](https://github.com/im47cn/awesome-rules/issues/233)
+* **skills:** 渐进式加载合规修复（task-flow 调用入口/README 孤儿指引/spike 清退/files: 偏离声明） ([12f54c5](https://github.com/im47cn/awesome-rules/commit/12f54c513850e0c92cb628e82206ce98098b930a))
+* **tools:** CodeRabbit 复审 6 项采纳修复 + 1 项拒绝 ([38e9990](https://github.com/im47cn/awesome-rules/commit/38e999031a26e6dd256c6d27b7d8d4775fd7a4c7))
+* **tools:** dispatch-watch 自测就绪握手轮询替代固定 sleep + wait 状态不透传 ([dcd0d75](https://github.com/im47cn/awesome-rules/commit/dcd0d7596759908544e12e2ab7f951ffe1c2dc68)), references [#238](https://github.com/im47cn/awesome-rules/issues/238)
+* **tools:** release_guard 派生产物排除纳入 .coverage/.ruff_cache ([3803b82](https://github.com/im47cn/awesome-rules/commit/3803b82656c90b29cdd398bc56f8cf9c82258d07)), references [#237](https://github.com/im47cn/awesome-rules/issues/237)
+* **tools:** sourcery-gate 对纯删除 push 的存在性过滤 + vendored 快照出评审面 ([220126b](https://github.com/im47cn/awesome-rules/commit/220126b9648d1f2fe488275b33341e6492e51b06))
+* **tools:** 内容指纹排除 coverage 运行时产物（.coverage*） ([fd9af1e](https://github.com/im47cn/awesome-rules/commit/fd9af1e7982fa8c8f41e91ce0c5fe0c34e0fc535))
+* **tools:** 清推送门禁暴露的 doc-gen 残留——hermetic 段表/DESIGN 死链/CI workflow/dependabot ([5f4a2d5](https://github.com/im47cn/awesome-rules/commit/5f4a2d5460d48fb0998466a9c19477c6a6ea7a89))
+* **tools:** 移除变异登记 B-103 死目标——target 已随本 PR 删除，套件重跑 kill rate 100% 重盖指纹戳 ([23135aa](https://github.com/im47cn/awesome-rules/commit/23135aa809cbe983a45efe169cae2dc24b52fb6d))
+
+### ⚡ 性能
+
+* **tools:** gauntlet 层编排批并发化，全量墙钟 84s→31s ([981fad7](https://github.com/im47cn/awesome-rules/commit/981fad78f11761a74ed9061c6e94265865b67d9c))
+
+### ♻️ 重构
+
+* **scripts:** badcase 物料解析与 guard 报告格式收编单一真相源 ([5d9cabd](https://github.com/im47cn/awesome-rules/commit/5d9cabd357e4872b4225fab92de4a12a2c591737))
+* **skill-evo:** 清偿 PR [#230](https://github.com/im47cn/awesome-rules/issues/230) 遗留的 15 处 Sourcery 风格债并重锁 evidence 指纹 ([65cf2e9](https://github.com/im47cn/awesome-rules/commit/65cf2e9880356b6396cc65beb05b3e95fd0efed8))
+* **task-flow:** subprocess 调用点内联 argv 列表字面量对齐全仓约定 ([a11083c](https://github.com/im47cn/awesome-rules/commit/a11083c1bf7a2e509a6d8a6c0c88d3461f7d2a15)), references [#93](https://github.com/im47cn/awesome-rules/issues/93)
+* **task-flow:** 清零 sourcery-review-gate 28 项质量告警 ([b6fa7f3](https://github.com/im47cn/awesome-rules/commit/b6fa7f3ec913d687823598aee1864b16ac129110))
+* **tools:** doc-gen 移交 arch-hawkeye 仓，删除本仓副本 ([3a49b37](https://github.com/im47cn/awesome-rules/commit/3a49b377f81374c5e0282f42d9d8820f9ca3c206))
+* 架构鹰眼拆分为独立仓 ([63a79ff](https://github.com/im47cn/awesome-rules/commit/63a79ffdcddae5ee033293f11bc6228a85de2e74))
+
+### 📝 文档
+
+* ADR-017 双层反馈范式自述（执行层 OODA × 治理层 PDCA） ([f7ecb07](https://github.com/im47cn/awesome-rules/commit/f7ecb0703a49a3b441c55232b517a39823a499b9))
+* CLAUDE 审查子代理挂起降级条款 ([3536e53](https://github.com/im47cn/awesome-rules/commit/3536e53236a7467c5328d6a518c83729d79eafd3)), references [#204](https://github.com/im47cn/awesome-rules/issues/204)
+* **doc-gen:** 修复 PR [#235](https://github.com/im47cn/awesome-rules/issues/235) 评论——澄清 RULES_PATH 契约归属鹰眼侧并去除本机路径 ([1b148f3](https://github.com/im47cn/awesome-rules/commit/1b148f3139fbe015df417df180dbcf6bf5d4842f))
+* **readme:** Comet 研究行落地状态更新——七项借鉴点全部落地 ([456a72b](https://github.com/im47cn/awesome-rules/commit/456a72bd6f4c57f01fd9f7b58ba7a7756f38a9ad))
+* **readme:** 登记 task-flow 技能行（目录树 + 技能表） ([7817d07](https://github.com/im47cn/awesome-rules/commit/7817d07a35a9f606e4cb116eec4d953beae4eeb3))
+* **research:** comet.md 借鉴点落地状态列按实更新，README 行同步口径 ([b35372c](https://github.com/im47cn/awesome-rules/commit/b35372cf65e55e7ded2f0f8b6e3443d18edb5835)), references [#7](https://github.com/im47cn/awesome-rules/issues/7) [#6](https://github.com/im47cn/awesome-rules/issues/6)
+* **skill-evo:** 契约 docstring 钉测试名整名成行，恢复 grep 可达性 ([ad33a6e](https://github.com/im47cn/awesome-rules/commit/ad33a6eec539d3ef1aa9ac44ed11f116c3a3a639)), references [#247](https://github.com/im47cn/awesome-rules/issues/247)
+* **skill:** task-flow 已知边界补 advance 拒绝零写入集成裁决 ([2356b4a](https://github.com/im47cn/awesome-rules/commit/2356b4acc771686745e1e89298a7f352d15df704))
+* **steering:** 规范/技能全量审查修复两批裁决闭环（S1-S7 + C1-C4） ([75d86ba](https://github.com/im47cn/awesome-rules/commit/75d86baea078ed1b6ccf7f3779a41b86deacfbb4))
+* **steering:** 规范/技能全量审查修复两批裁决闭环（S1-S7 + C1-C4）([#241](https://github.com/im47cn/awesome-rules/issues/241)) ([9d44a8b](https://github.com/im47cn/awesome-rules/commit/9d44a8b23481ef68de2e1240469f21a42e357e10))
+* **task-flow:** subprocess 调用点补无 shell 不变量注释（审计误报裁定） ([9b181be](https://github.com/im47cn/awesome-rules/commit/9b181beda6bfe148df93562092d1c243081c1268))
+* **tools:** _is_derived 契约注释补 .coverage* 前缀匹配规则（Sourcery [#254](https://github.com/im47cn/awesome-rules/issues/254)） ([8f72a41](https://github.com/im47cn/awesome-rules/commit/8f72a41a5ef07c7814e30a466794ce42cd258500))
+
+### ✅ 测试
+
+* **arch-guard:** 生成器测试密封化——_gen 默认空 tmp 目录替代 CWD 扫描 ([ed4a375](https://github.com/im47cn/awesome-rules/commit/ed4a375cb45973f9be1557a04e4b0daa2ea8e0e3))
+* **factory:** 基线块拷贝等价显式断言（Sourcery [#256](https://github.com/im47cn/awesome-rules/issues/256)） ([93212bd](https://github.com/im47cn/awesome-rules/commit/93212bd810cf0b9b0a9c393454af0a80b136dd14))
+* **impact-guard:** vendored 快照对拍门禁——与 arch-hawkeye docgen/scripts 真相源字节级对拍 ([e6bc2ea](https://github.com/im47cn/awesome-rules/commit/e6bc2ea1fd6fe370515bf8b83529d3711e88dcd9))
 ## [0.7.1](https://github.com/im47cn/awesome-rules/compare/v0.7.0...v0.7.1) (2026-09-21)
 
 ### 📝 文档
