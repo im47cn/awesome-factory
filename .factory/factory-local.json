@@ -29,5 +29,6 @@
   "pr_review_skills": [],
   "upstream_repo": "im47cn/awesome-factory",
   "upstream_path": "~/sources/awesome-factory",
+  "port_point": "6c4ac712c4dafd7599fabbbc02352be119666bd3",
   "feedback_branch_prefix": "feedback/awesome-factory"
 }
