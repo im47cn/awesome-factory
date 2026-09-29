@@ -1,7 +1,7 @@
 {
   "name": "awesome-rules",
   "description": "研发规范与 AI Agent 技能库：10 个审查/工具技能 + 6 项通用设计规范 + GTSP 工程规范，SessionStart 自动注入规范索引",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "author": {
     "name": "万联易达"
   },

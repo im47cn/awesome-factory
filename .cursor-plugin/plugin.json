@@ -1,7 +1,7 @@
 {
   "name": "awesome-rules",
   "displayName": "Awesome Rules",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "DDL 数据库与 API 规范审查与设计指导，含自动化检查脚本",
   "author": {
     "name": "万联易达"

@@ -1,6 +1,6 @@
 {
   "name": "awesome-rules",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "研发规范与 AI Agent 技能库：DDL/SQL 审查、API 审查，包含测试、数据库、API、Git 四大规范",
   "author": {
     "name": "万联易达"
