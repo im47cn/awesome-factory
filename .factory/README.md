@@ -395,7 +395,7 @@ L4 无关）：
 
 - **B1 `--repo` + `--commit`**（`sync-from-upstream.sh`）：中心驱动、
   任意 cwd 操作目标仓；追平产物+锚点+blame-ignore 以单提交落库
-  （`factory: 上游同步追平（<sha9>）`），落当前分支**不推送**。
+  （`chore(factory): 上游同步追平（<sha9>）`），落当前分支**不推送**。
   目标仓 `.factory` 有未提交 tracked 改动时拒绝（fail-closed，
   热修不被自动提交淹没）。blame-ignore **滞后一条**：提交无法含
   自身 SHA，本轮记上一轮追平提交；并 `git config blame.ignoreRevsFile`
