@@ -19,6 +19,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # runner 裸环境无 pytest（setup-python 只装解释器，run #36535100047
+      # 实证 1 秒即败：No module named pytest）。套件第三方依赖仅 pytest，
+      # 检查器与 dispatch-watch 自测均 stdlib/git——缺席即硬失败，不降级。
+      - name: Install pytest
+        run: python3 -m pip install pytest
       - name: 工厂测试套件
         run: python3 -m pytest .factory/tests -o addopts= -q
       - name: 工厂门（full 面零宿主专名 + 托管出口收口）
