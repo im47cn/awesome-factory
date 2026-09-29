@@ -1,0 +1,16 @@
+# 工厂运行时状态（本机数据，不入库；结构对齐 awesome-rules 迁出前形态）
+.factory/artifacts/
+.factory/locks/
+.factory/var/
+.factory/worktrees/
+.factory/metrics/*
+!.factory/metrics/auto-merge-unlocked
+.factory/downstream.local.json
+.factory/db/*.db
+.factory/feedback-log.jsonl
+
+# Python 运行产物
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage

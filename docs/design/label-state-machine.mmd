@@ -1,0 +1,38 @@
+flowchart TB
+    subgraph ISSUE["Issue 侧标签"]
+        direction TB
+        idle(("无标签"))
+        triaging["factory:triaging<br/>triage 裁决中（锁）"]
+        accepted["factory:accepted<br/>队列：待派发"]
+        inprog["factory:in-progress<br/>dispatcher 抢占（锁）"]
+        inrev["factory:in-review<br/>状态由 PR 接管"]
+        rejected["factory:rejected<br/>终态：链终止"]
+    end
+
+    subgraph PR["PR 侧标签"]
+        direction TB
+        needsreview["factory:needs-review<br/>待人工审查"]
+        needsfix["factory:needs-fix<br/>被打回待修（≤2 轮）"]
+        needshuman["factory:needs-human<br/>需人工接管"]
+        approved["factory:approved<br/>审查通过（merge 受 A5 门控）"]
+    end
+
+    merged(("MERGED"))
+    closed(("closed"))
+
+    idle -->|"① triage_start：chain_start"| triaging
+    triaging -->|"② triage_accept：verdict=accept"| accepted
+    triaging -->|"③ triage_reject：verdict=reject"| rejected
+    accepted -->|"④ dispatch_claim：dispatcher 原子抢占"| inprog
+    inprog -->|"⑤ chain_fail：链失败 trap，清标回零可重试"| idle
+    inprog -->|"⑥ breaker_tripped：R4 熔断 exit 5"| needshuman
+    inprog -->|"⑦ pr_open：PR 创建"| inrev
+    inprog -.->|"⑦ PR 侧同步打标"| needsreview
+    needsreview -->|"⑧ changes_requested"| needsfix
+    needsfix -->|"⑨ redispatch：rounds&lt;2"| inprog
+    needsfix -->|"⑩ rounds_exhausted：rounds≥2"| needshuman
+    needsreview -->|"⑪ approved：reviewDecision=APPROVED"| approved
+    approved -->|"⑫ auto_merge：A5 门开（否则人工合并）"| merged
+    needshuman -.->|"⑬ human_takeover：人工删标/重开（any）"| idle
+    idle -.->|"人工标记评论「factory:rejected」"| rejected
+    inrev -.->|"merged/人工关闭：sync 清流转标签"| closed

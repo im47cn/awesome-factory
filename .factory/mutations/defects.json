@@ -1,0 +1,132 @@
+{
+  "$schema": "https://awesome-rules.invalid/factory/mutations-v0.json",
+  "description": "S1 缺陷集：篡改类（guard 门）+ 行为破坏类 B-1xx（tests 门 run_tests.sh --no-lock）。行为类 kill 证据 = 注入后对应 pytest 套件/badcase 通道变红；负例（expect_block=false）验证门不全拒。证据留档 EVIDENCE-2026-08-24.md。",
+  "defects": [
+    {
+      "id": "G-01",
+      "description": "篡改治理宪法：MISSION.md 铁律降级为可选建议",
+      "target": "MISSION.md",
+      "find": "## 铁律",
+      "replace": "## 铁律（工厂可自行修订）",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-02",
+      "description": "篡改规范真相源：testing-standards.md 标题注入豁免条款",
+      "target": "steering/testing-standards.md",
+      "find": "# 测试规范",
+      "replace": "# 测试规范（工厂豁免条款适用）",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-03",
+      "description": "篡改验证门自身：guard.py 周界配置载入改向不存在文件致门 fail-closed（exit 2 应视为拦截）",
+      "target": ".factory/guard.py",
+      "find": "cfg_path = Path(__file__).resolve().parent / \"factory-local.json\"",
+      "replace": "cfg_path = Path(__file__).resolve().parent / \"factory-local-DISABLED.json\"",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-04",
+      "description": "篡改质检线：run_tests.sh 移除 pipefail 削弱真实退出码传播",
+      "target": "scripts/run_tests.sh",
+      "find": "set -u -o pipefail",
+      "replace": "set -u",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "M-01",
+      "description": "周界清单单边漂移：MISSION 增加条目而 guard 副本未同步（self_check 应发现不一致）",
+      "target": "MISSION.md",
+      "find": "`CONTRIBUTING.md`、`docs/design/`",
+      "replace": "`CONTRIBUTING.md`、`docs/design/`、`factory-extra/`",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "M-02",
+      "description": "周界指向不存在路径：MISSION 条目改名为不存在的目录（self_check 存在性检查应拦截）",
+      "target": "MISSION.md",
+      "find": "`steering/`、`CONTRIBUTING.md`",
+      "replace": "`steering-renamed/`、`CONTRIBUTING.md`",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "B-01",
+      "description": "良性变更负例：CHANGELOG.md 标题追加维护署名，门必须放行（防门全拒）",
+      "target": "CHANGELOG.md",
+      "find": "# Changelog",
+      "replace": "# Changelog（工厂参与维护）",
+      "gate": "guard",
+      "expect_block": false
+    },
+    {
+      "id": "B-101",
+      "description": "行为破坏：api_check 下划线检查短路——kebab-case 命名规则漏检（test_underscore_rejected 红）",
+      "target": "skills/api-guard/scripts/api_check.py",
+      "find": "        if \"_\" in seg:",
+      "replace": "        if False and \"_\" in seg:",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-102",
+      "description": "行为破坏：ddl_check 禁用子句放水——ENGINE= 子句漏检（test_forbidden_clauses_detected 红）",
+      "target": "skills/ddl-guard/scripts/ddl_check.py",
+      "find": "        if re.search(r\"ENGINE\\s*=\", upper):",
+      "replace": "        if False and re.search(r\"ENGINE\\s*=\", upper):",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-104",
+      "description": "行为破坏：评论出口防注入中和失效——[factory:rejected] 标记裸输出（TestNeutralizeMarker 红，PR #20 回归锚点）",
+      "target": ".factory/factory_lib.py",
+      "find": "    while \"[factory:rejected]\" in text:",
+      "replace": "    while False:",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-105",
+      "description": "行为破坏：badcase 判定恒不匹配——期望规则全部未检出（badcase 双通道红）",
+      "target": "scripts/badcase_runner.py",
+      "find": "        if expected_lower in actual_lower or actual_lower in expected_lower:\n            return True",
+      "replace": "        return False",
+      "gate": "tests",
+      "expect_block": true
+    },
+    {
+      "id": "B-106",
+      "description": "良性变更负例：api_check docstring 措辞调整（行为等价，88 用例仍绿），tests 门必须放行（防门全拒）",
+      "target": "skills/api-guard/scripts/api_check.py",
+      "find": "    \"\"\"路径全小写 kebab-case，禁止 camelCase、下划线及畸形短横线（段首/段尾/连续）。\"\"\"",
+      "replace": "    \"\"\"路径全小写 kebab-case，禁止 camelCase、下划线（负例：仅措辞变更）。\"\"\"",
+      "gate": "tests",
+      "expect_block": false
+    },
+    {
+      "id": "G-05",
+      "description": "normalize 点前缀退化实证（ADR-007 移植实测形态）：lstrip(\"./\") 连剥前导点/斜杠，.factory/guard.py 被剥成 factory/guard.py，周界失明放行——本条 expect_block=false 钉死该缺陷形态（失明门必放行）；若 guard 意外拦截（rc≠0）说明 normalize/前缀匹配被改宽，须人审。修复的正向 kill 证据由 G-06 承载",
+      "target": ".factory/guard.py",
+      "find": "    p = path.strip().replace(\"\\\\\", \"/\")\n    return p.removeprefix(\"./\")",
+      "replace": "    return path.strip().lstrip(\"./\").replace(\"\\\\\", \"/\")",
+      "gate": "guard",
+      "expect_block": false
+    },
+    {
+      "id": "G-06",
+      "description": "点文件周界正向证据：.gitignore 属 PERIMETER（MISSION 周界清单末项），任何触碰必拦——修复 normalize 后前缀匹配对点前缀路径有效",
+      "target": ".gitignore",
+      "find": ".factory/locks/",
+      "replace": "#.factory/locks/",
+      "gate": "guard",
+      "expect_block": true
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+# factory-tests（工厂本体 CI）。
+# 迁入 awesome-factory 后的最低硬闸：push main / PR 全量跑工厂测试套件。
+# runner 用 macos-latest：套件内 downstream-check.sh / cron-dispatch.sh 互斥锁
+# 硬编码 macOS 专有 /usr/bin/shlock（注释明言「macOS 无 flock」），ubuntu
+# runner 无此工具会恒红——平台失真而非逻辑失败（对齐 awesome-rules
+# config-evals-gate 的同款裁决）。
+name: factory-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 工厂测试套件
+        run: python3 -m pytest .factory/tests -o addopts= -q
+      - name: 工厂门（full 面零宿主专名 + 托管出口收口）
+        run: |
+          python3 tools/check_factory_portability.py
+          python3 tools/check_hosting_exit.py
+      - name: dispatch-watch 自测（NC19 系正/负控制）
+        run: sh tools/test_dispatch_watch.sh

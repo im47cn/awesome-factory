@@ -1,0 +1,6 @@
+unlocked: 2026-08-21
+re-signed: 2026-08-26
+basis: python3 .factory/mutations/run.py 全量
+result: kill-rate 12/12=100%（篡改 7/7 + 行为 5/5）, 负例放行 3/3
+evidence: .factory/mutations/EVIDENCE-2026-08-26.md
+note: A5 必要非充分条件已满足；重新启用门需删除本文件。重签记录：2026-08-21 首签（6/6）；2026-08-26 重签（12/12，含 G-06 点文件周界与 G-05 退化实证）

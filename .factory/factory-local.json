@@ -1,0 +1,33 @@
+{
+  "description": "工厂本地化配置（M4 本地化外置 + 拆分前置 ADR-009）：周界/判据措辞/门命令/prompt 仓库参数/上游指针是数据不是代码——guard.py / factory_lib.py / 链脚本 / prompts 因此零本地化、按 DISTRIBUTION.json full 分发；本文件每仓一份（skip 分发，永不跨仓覆盖）。fail-closed：缺失/损坏/缺键 = 使用方直接非零退出。周界须与 MISSION.md「周界（PERIMETER）」一致——guard.self_check 每次运行强制核对（MISSION 是真相源，本文件是机械化载体）。本仓为工厂本体上游真相源（2026-09-29 自 awesome-rules 迁入）：upstream 指针指向本仓自身，feedback 管线自环保留键位以维持 schema 一致。",
+  "perimeter": [
+    "MISSION.md",
+    "README.md",
+    "WATCHDOG.md",
+    "LICENSE",
+    "docs/design/",
+    "docs/adr/",
+    "docs/P3-分发层数据验证与设计-task-brief.md",
+    ".factory/",
+    "tools/",
+    ".github/",
+    ".gitignore"
+  ],
+  "reject_guidance": {
+    "a": "判据a（使命一致）：写明落点——工厂链/分发/仲裁（.factory/）、配套工具（tools/）或文档（docs/）中的哪个文件/模块；",
+    "b": "判据b（可判定）：把完成标准写成可机械验证的形式——验收 = 具体测试/脚本的断言（.factory/tests 中的测试类/方法名、公式、逐条清单、file:line 级差异），避免「持续 / 优化 / 修收」类开放措辞；doc-only（纯文档）改动在验证门零投影——补可执行验收载体或转人工 PR；",
+    "c": "判据c（不触周界）：触及 PERIMETER 的部分拆成独立 issue 走人类 PR（清单见 MISSION.md）；"
+  },
+  "repo_identity": "awesome-factory",
+  "reading_scopes": [
+    "README.md",
+    "docs/",
+    "tools/"
+  ],
+  "review_basis": "docs/adr/ 决策记录 + .factory/README.md 运维手册",
+  "final_gate_cmd": "python3 -m pytest .factory/tests -o addopts= -q",
+  "pr_review_skills": [],
+  "upstream_repo": "im47cn/awesome-factory",
+  "upstream_path": "~/sources/awesome-factory",
+  "feedback_branch_prefix": "feedback/awesome-factory"
+}

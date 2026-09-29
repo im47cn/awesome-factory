@@ -1,0 +1,4 @@
+{
+  "description": "下游巡检清单模板（ADR-012）：真实路径是仓特定数据，写 downstream.local.json（gitignored，永不入库）——公开仓零内部标识。downstream-check.sh 优先读 local 文件，本文件仅占位与文档。",
+  "repos": []
+}
