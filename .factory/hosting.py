@@ -551,8 +551,8 @@ class CodeupAdapter:
                     ns_map[k.strip()] = v.strip()
         org, path = self._remote()
         if org and path and "/" in path and ns_map:
-            # namespace = path 首段（gtsp/open-platform/<repo> → gtsp）；
-            # 旧 [1] 取到中间层 open-platform，映射永不命中（php#17）
+            # namespace = path 首段（org/team/<repo> → org）；
+            # 旧 [1] 取到中间层 team，映射永不命中（php#17）
             ns = path.split("/")[0]
             if ns in ns_map:
                 return ns_map[ns]

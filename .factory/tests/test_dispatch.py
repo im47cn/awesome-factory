@@ -245,7 +245,7 @@ class TestDispatchParsers:
         """Codeup（阿里云效）URL 不匹配 GitHub 锚定：未接入仓 fail-closed
         空串，不得误解析为 GitHub slug（ADR-008 平台隔离）。"""
         assert extract_slug(
-            ["git@codeup.aliyun.com:610b3c9d86508f8da8b08436/gtsp/x.git"]
+            ["git@codeup.aliyun.com:000000000000000000000000/group/x.git"]
         ) == ""
 
     def test_extract_slug_spoof_hosts_rejected(self):
@@ -263,10 +263,10 @@ class TestDispatchParsers:
 
         a = hosting_mod.CodeupAdapter(repo=".")
         cases = [
-            ("https://codeup.aliyun.com/6ab/gtsp/x.git", ("6ab", "gtsp/x")),
-            ("https://codeup.aliyun.com/6ab/gtsp/x", ("6ab", "gtsp/x")),
-            ("ssh://git@codeup.aliyun.com:22/6ab/gtsp/x.git", ("6ab", "gtsp/x")),
-            ("git@codeup.aliyun.com:6ab/gtsp/x.git", ("6ab", "gtsp/x")),
+            ("https://codeup.aliyun.com/6ab/group/x.git", ("6ab", "group/x")),
+            ("https://codeup.aliyun.com/6ab/group/x", ("6ab", "group/x")),
+        ("ssh://git@codeup.aliyun.com:22/6ab/group/x.git", ("6ab", "group/x")),
+            ("git@codeup.aliyun.com:6ab/group/x.git", ("6ab", "group/x")),
             ("https://codeup.aliyun.com/only-org", (None, None)),
         ]
         for url, want in cases:
@@ -288,8 +288,8 @@ class TestDispatchParsers:
                 lambda *args, **kw: SimpleNamespace(stdout=url + "\n", returncode=0))
             return hosting_mod._detect_hosting(".")
 
-        assert detect("https://codeup.aliyun.com/6ab/gtsp/x.git") == "codeup"
-        assert detect("git@codeup.aliyun.com:6ab/gtsp/x.git") == "codeup"
+        assert detect("https://codeup.aliyun.com/6ab/group/x.git") == "codeup"
+        assert detect("git@codeup.aliyun.com:6ab/group/x.git") == "codeup"
         assert detect("https://codeup.aliyun.com.evil.com/6ab/x.git") == "github"
         assert detect("https://evil.com/codeup.aliyun.com/6ab/x.git") == "github"
         assert detect("https://github.com/o/r.git") == "github"
