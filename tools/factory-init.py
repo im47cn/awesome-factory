@@ -205,6 +205,25 @@ def load_full_manifest() -> list[str]:
     return json.loads(DISTRIBUTION.read_text(encoding="utf-8"))["full"]
 
 
+def verify_factory_provenance(repo: Path) -> None:
+    """现有 .factory/ 的 full 面文件必须与上游字节一致，否则拒绝执行。
+
+    MISSION 生成标记可被目标仓伪造，不能作来源证明（Sourcery 阻断，
+    F20 回归）：初始化第二段会执行 .factory 内的 guard.py /
+    mutations/run.py，后续调度还会跑 full 面 shell——只信与上游分发面
+    字节一致的文件。缺失 = 安装不完整；漂移 = 异源或待追平，均 fail-closed。
+    """
+    for entry in load_full_manifest():
+        if entry.endswith("/"):
+            continue
+        dst = repo / ".factory" / entry
+        src = UPSTREAM / ".factory" / entry
+        if not dst.exists() or dst.read_bytes() != src.read_bytes():
+            die(f".factory/{entry} 与上游 full 面不一致或缺失——现有 .factory/ "
+                "不可信（生成标记可伪造，不作来源证明）。已接入仓请先 "
+                "sync-from-upstream 追平后重跑；否则人工移除 .factory/ 再 init。")
+
+
 def copy_full_face(repo: Path) -> list[str]:
     """按清单拷贝 full 面（文件直接覆盖、目录整树，排除运行时产物）。
 
@@ -424,6 +443,8 @@ def cmd_init(argv: list[str]) -> int:
     if not has_factory:
         copied = copy_full_face(repo)
         print(f"① 已拷贝上游 full 面 {len(copied)} 项 → .factory/")
+    else:
+        verify_factory_provenance(repo)                       # F20：执行前验源
     if perimeter_arg is None:
         if mission_text and has_marker and SKELETON_ENTRY not in mission_text:
             print("MISSION 周界已填实——重跑请带 --perimeter 以重证（或直接编辑"

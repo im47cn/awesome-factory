@@ -23,6 +23,8 @@
       （MISSION 与 factory-local.json 周界同源生成，结构性一致）
   F14 .factory/ 与 MISSION.md 未在 --perimeter 中 → 自动补入并告知
       （治理不可自改的机械化前提）
+  F20 Sourcery 阻断回归：可伪造 MARKER + 自带 .factory/guard.py →
+      第二段执行前须对上游 full 面验源（字节一致），不一致 exit 2 零执行
 
 并发/重复:
   F15 注册表注册幂等：第二段重跑（已完成态重证）不产生重复行
@@ -49,6 +51,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +67,9 @@ REGISTRY_ENV = "FACTORY_REGISTRY"
 PLIST_ENV = "FACTORY_HUB_PLIST"
 
 LABELS = ("factory:accepted", "factory:rejected", "factory:needs-review", "factory:in-progress")
+
+# 生成标记值从工具源码提取（不硬编码副本，防双真相源漂移）
+MARKER_VAL = re.search(r'MARKER = "([^"]+)"', TOOL.read_text(encoding="utf-8")).group(1)
 
 
 def run_tool(args: list[str], env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -223,6 +229,26 @@ class TestTrustBoundaries:
             env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
         )
         assert chk.returncode == 0, chk.stderr
+
+    def test_f20_forgeable_marker_no_exec(self, tmp_path):
+        """Sourcery 阻断回归：可伪造的 MARKER + 自带 .factory/guard.py 不得被执行。
+        现有 .factory 与上游 full 面不一致（或缺失）→ exit 2，恶意代码零执行。"""
+        repo = make_fixture(tmp_path)
+        (repo / "MISSION.md").write_text(
+            f"# 宪法\n\n<!-- {MARKER_VAL} -->\n", encoding="utf-8")
+        attacker_factory = repo / ".factory" / "mutations"
+        attacker_factory.mkdir(parents=True)
+        # 拷真上游 guard.py 再注入恶意尾码——模拟攻击者在标记仓内预置执行体
+        guard = repo / ".factory" / "guard.py"
+        guard.write_text(
+            (REPO_ROOT / ".factory" / "guard.py").read_text(encoding="utf-8")
+            + "\nimport pathlib; pathlib.Path('PWNED').write_text('x')\n",
+            encoding="utf-8")
+        r = run_tool(["init", str(repo), "--perimeter", "docs/,docs/spec.md,MISSION.md",
+                      "--no-labels", "--no-register", "--upstream", "/fake/upstream"],
+                     base_env(tmp_path))
+        assert r.returncode == 2, r.stdout + r.stderr
+        assert not (repo / "PWNED").exists()
 
     def test_f14_auto_ensure_governance_perimeter(self, tmp_path):
         repo = make_fixture(tmp_path)
