@@ -8,12 +8,13 @@
 #   ① .lefthook-profile 语言声明——缺席时探测生成（pom.xml→java,
 #      pyproject.toml→python, tsconfig.json→ts；多语言逗号分隔），
 #      已存在不覆盖（人工覆写优先）
-#   ② lefthook.yml pre-push mutation-gate job 幂等注入（锚位: sourcery-gate
-#      之后; 注入先例: awesome-rules install.sh 的 package.json scripts）
+#   ② lefthook.yml pre-push mutation-gate job 幂等注入（检测/注入均限定 pre-push
+#      jobs/commands 段内; python3 行级手术 + 回读校验, 失败不报成功）
 #   ③ .lefthook/gates-lock.json 锚点（上游 HEAD-9 + 落地文件 sha256）
 # 用法: bash gates-install.sh [--repo <path>] [--check]
 #   --repo  目标仓（默认当前目录所属仓）
-#   --check 只对账不落盘：full 漂移/缺失 exit 1；local/profile/job 缺席仅报告
+#   --check 只对账不落盘：full 漂移/缺失、lefthook.yml 或 pre-push job 缺席 exit 1；
+#          local/profile 缺席仅报告
 set -u
 
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)   # <factory>/tools/git/gates
@@ -36,7 +37,8 @@ if [ -z "$REPO" ]; then
   REPO=$(git rev-parse --show-toplevel 2>/dev/null)
   [ -n "$REPO" ] || die "无法定位目标仓（cd 到目标仓或传 --repo <path>）"
 fi
-git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$REPO 不是 git 工作仓"
+# --repo 允许传仓内任意子目录: 归一到工作树根, 仓级文件(.lefthook/lefthook.yml)必须落根
+REPO=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) || die "${REPO_ARG:-当前目录} 不是 git 工作仓"
 [ -f "$MANIFEST" ] || die "清单缺失: $MANIFEST"
 command -v python3 >/dev/null 2>&1 || die "需要 python3（解析 gates.json / 写 lock）"
 
@@ -45,6 +47,21 @@ ANCHOR=$(git -C "$UP" rev-parse --short=9 HEAD 2>/dev/null || echo unknown)
 sha() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
   else sha256sum "$1" | cut -d' ' -f1; fi
+}
+
+# 防符号链接逃逸: 目标路径任一已存组件(含末端)是符号链接即拒绝写入——消费仓可用
+# .lefthook → /仓外 软链劫持安装器沿链覆盖仓外文件（cp 与 open(...,"w") 均跟随软链）
+guard_dest() { # $1 = 目标绝对路径(须位于 REPO 之下)
+  case "$1" in
+    "$REPO"/*) rel=${1#"$REPO"/} ;;
+    *) die "目标路径越出目标仓: $1" ;;
+  esac
+  cur="$REPO"
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    cur="$cur/$c"
+    [ -L "$cur" ] && die "拒绝写入符号链接组件: ${cur}（防仓外写入劫持; 仓内软链请改实体路径）"
+  done < <(printf '%s\n' "$rel" | tr '/' '\n')
 }
 
 list_face() { # $1=full|local → 每行 "src dst"
@@ -79,7 +96,8 @@ if [ -f "$REPO/.lefthook-profile" ]; then
 elif [ "$MODE" = install ]; then
   prof=$(detect_profile "$REPO")
   if [ -n "$prof" ]; then
-    printf '%s\n' "$prof" > "$REPO/.lefthook-profile"
+    guard_dest "$REPO/.lefthook-profile"
+    printf '%s\n' "$prof" > "$REPO/.lefthook-profile" || die "写入失败: .lefthook-profile"
     echo "✔ [gates] .lefthook-profile 探测生成: ${prof}（人工可覆写）"
   else
     echo "⚠ [gates] 未探测到语言面（无 pom.xml/pyproject.toml/tsconfig.json）; 请人工创建 .lefthook-profile (java|python|ts, 多语言逗号分隔)"
@@ -94,8 +112,9 @@ while read -r src dst; do
   s="$UP/$src"; d="$REPO/$dst"
   [ -f "$s" ] || die "上游缺失: $src"
   if [ "$MODE" = install ]; then
-    mkdir -p "$(dirname "$d")"
-    cp "$s" "$d"
+    guard_dest "$d"
+    mkdir -p "$(dirname "$d")" || die "创建目录失败: $(dirname "$d")"
+    cp "$s" "$d" || die "写入失败: $dst"
     echo "✔ [gates] full: $src → $dst (anchor=$ANCHOR)"
   else
     if [ ! -f "$d" ]; then
@@ -115,8 +134,9 @@ while read -r src dst; do
   [ -f "$s" ] || die "上游缺失: $src"
   if [ "$MODE" = install ]; then
     if [ ! -f "$d" ]; then
-      mkdir -p "$(dirname "$d")"
-      cp "$s" "$d"
+      guard_dest "$d"
+      mkdir -p "$(dirname "$d")" || die "创建目录失败: $(dirname "$d")"
+      cp "$s" "$d" || die "写入失败: $dst"
       echo "✔ [gates] local 首落地: $src → ${dst}（此后归仓所有, 上游只报告不覆盖）"
     elif [ "$(sha "$s")" != "$(sha "$d")" ]; then
       echo "○ [gates] local 漂移(不覆盖, 仅报告): $dst 与模板有差异——仓侧定制属预期"
@@ -129,53 +149,107 @@ while read -r src dst; do
   fi
 done < <(list_face local)
 
-# ── ④ lefthook.yml pre-push job 幂等注入（仅 install 面） ──────────────────
+# ── ④ lefthook.yml pre-push mutation-gate job 注入（幂等; 检测/注入均限定 pre-push 段） ──
+# run 链语义: awesome-rules 删除防护契约——纯删除推送 exit 0 短路跳过门禁(sourcery/
+# coderabbit job 同款既定语义), 正常推送/读取异常 exit 1 门禁照跑, 故 || 链在正常推送
+# 必然落 mutation-gate; 不用 {push_files}: 新分支首推无 @{push} 引用时 lefthook 展开
+# 即失败绑架首推, 且 mutation-gate.sh 自算 diff 基线无需文件清单实参
 JOB_BLOCK='    mutation-gate:
       use_stdin: true
-      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/mutation-gate.sh {push_files}'
+      # 删除防护极性契约: guard 0=纯删除推送→短路跳过门禁(awesome-rules 既定语义);
+      # guard 1=正常推送/读取异常(fail-open)→|| 落本门禁, 退出码即 job 退出码
+      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/mutation-gate.sh'
 
+# python3 行级手术(不引入 yaml 依赖): 只认 pre-push.jobs|commands 段内同名 job——挂在
+# 其他 hook 下的同名 job 不算在位; 注入插到子段末尾并回读校验, 失败不报成功
+# exit 0=已在位或注入成功 / 1=check 发现缺席 / 3=注入失败
+lw_job() { # $1=lefthook.yml $2=check|inject $3=job_block
+  python3 - "$1" "$2" "$3" <<'PY'
+import os, re, sys, tempfile
+path, mode, block = sys.argv[1], sys.argv[2], sys.argv[3]
+TOP = re.compile(r"^[^\s#]")
+with open(path) as f:
+    lines = f.read().splitlines()
+
+def find_job(lines):
+    """pre-push 的 jobs|commands 子段内 '    mutation-gate:' 行号(0 基), 无则 -1"""
+    s = next((i for i, l in enumerate(lines) if l.rstrip() == "pre-push:"), None)
+    if s is None:
+        return -1
+    e = next((i for i in range(s + 1, len(lines)) if TOP.match(lines[i])), len(lines))
+    j = next((i for i in range(s + 1, e) if lines[i].rstrip() in ("  jobs:", "  commands:")), -1)
+    if j < 0:
+        return -1
+    return next((i for i in range(j + 1, e) if lines[i].startswith("    mutation-gate:")), -1)
+
+if find_job(lines) >= 0:
+    print("✔ [gates] lefthook.yml pre-push mutation-gate job 已在位（幂等跳过）")
+    sys.exit(0)
+if mode == "check":
+    sys.exit(1)
+
+s = next((i for i, l in enumerate(lines) if l.rstrip() == "pre-push:"), None)
+if s is None:
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines += ["pre-push:", "  jobs:"] + block.splitlines()
+else:
+    e = next((i for i in range(s + 1, len(lines)) if TOP.match(lines[i])), len(lines))
+    j = next((i for i in range(s + 1, e) if lines[i].rstrip() in ("  jobs:", "  commands:")), -1)
+    if j < 0:
+        # pre-push 无 jobs/commands 子段: 紧随其后插入 jobs: 头(其余 2 空格属性行后移仍合法)
+        lines[s + 1:s + 1] = ["  jobs:"] + block.splitlines()
+    else:
+        # 插到子段末尾: 最后一条缩进≥4 的非空行之后, 不扰其后的 2 空格属性/顶层键
+        last = j
+        for i in range(j + 1, e):
+            if lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) >= 4:
+                last = i
+        lines[last + 1:last + 1] = block.splitlines()
+
+tmp = tempfile.NamedTemporaryFile("w", dir=os.path.dirname(os.path.abspath(path)), delete=False)
+try:
+    with tmp:
+        tmp.write("\n".join(lines) + "\n")
+    with open(tmp.name) as f:
+        if find_job(f.read().splitlines()) < 0:
+            print("✗ [gates] lefthook.yml job 注入后回读校验未通过")
+            sys.exit(3)
+    os.replace(tmp.name, path)
+except BaseException:
+    try:
+        os.unlink(tmp.name)
+    except OSError:
+        pass
+    raise
+print("✔ [gates] lefthook.yml pre-push mutation-gate job 已注入")
+PY
+}
+
+LW="$REPO/lefthook.yml"
 if [ "$MODE" = install ]; then
-  LW="$REPO/lefthook.yml"
   if [ ! -f "$LW" ]; then
     echo "⚠ [gates] 无 lefthook.yml（先经 awesome-rules install.sh 初始化）; 请手动挂 pre-push mutation-gate job"
-  elif grep -q '^    mutation-gate:' "$LW"; then
-    echo "✔ [gates] lefthook.yml mutation-gate job 已在位（幂等跳过）"
   else
-    tmp=$(mktemp "${TMPDIR:-/tmp}/gates-lw.XXXXXX")
-    # 锚位: sourcery-gate run 行之后（tier 0 无依赖组内, 串行次序无语义）;
-    # 回退: coderabbit-gate: 之前; 再回退: 文件尾追加
-    # 注: block 经 ENVIRON 传值——BSD awk(macOS) 的 -v 赋值不接受字面换行(newline in string)
-    JOB_BLOCK="$JOB_BLOCK" awk '
-      BEGIN { block = ENVIRON["JOB_BLOCK"] }
-      { lines[++n] = $0 }
-      END {
-        a1 = 0; a2 = 0
-        for (i = 1; i <= n; i++) {
-          if (index(lines[i], "sourcery-gate.sh {push_files}") > 0) a1 = i
-          if (a2 == 0 && lines[i] ~ /^    coderabbit-gate:/) a2 = i
-        }
-        if (a1 > 0) {
-          for (i = 1; i <= n; i++) { print lines[i]; if (i == a1) print block }
-        } else if (a2 > 0) {
-          for (i = 1; i <= n; i++) { if (i == a2) print block; print lines[i] }
-        } else {
-          for (i = 1; i <= n; i++) print lines[i]
-          print block
-        }
-      }
-    ' "$LW" > "$tmp" && mv "$tmp" "$LW" \
-      && echo "✔ [gates] lefthook.yml mutation-gate job 已注入" \
-      || { echo "✗ [gates] lefthook.yml job 注入失败 (awk/mv)"; rm -f "$tmp"; fail=1; }
+    guard_dest "$LW"
+    lw_job "$LW" inject "$JOB_BLOCK" || { echo "✗ [gates] lefthook.yml job 注入失败"; fail=1; }
   fi
 else
-  if [ -f "$REPO/lefthook.yml" ] && ! grep -q '^    mutation-gate:' "$REPO/lefthook.yml"; then
-    echo "⚠ [gates] lefthook.yml 缺 mutation-gate job（--check 仅报告; install 可幂等注入）"
+  if [ ! -f "$LW" ]; then
+    echo "✗ [gates] lefthook.yml 缺席: pre-push mutation-gate job 无处挂载（--check 失败; 先经 awesome-rules install.sh 初始化）"
+    fail=1
+  elif lw_job "$LW" check "$JOB_BLOCK" >/dev/null 2>&1; then
+    echo "✔ [gates] lefthook.yml pre-push mutation-gate job 在位"
+  else
+    echo "✗ [gates] lefthook.yml pre-push jobs 缺 mutation-gate job（--check 失败; 重跑 install 幂等注入）"
+    fail=1
   fi
 fi
 
-# ── ⑤ 锚点 lock（仅 install 面） ────────────────────────────────────────────
-if [ "$MODE" = install ]; then
-  python3 - "$UP" "$REPO" "$ANCHOR" "$LOCK_DST" <<'PY'
+# ── ⑤ 锚点 lock（仅 install 面; 前面有失败项时不写锁——不完整安装不得盖成功戳） ──
+if [ "$MODE" = install ] && [ "$fail" -eq 0 ]; then
+  guard_dest "$REPO/$LOCK_DST"
+  if python3 - "$UP" "$REPO" "$ANCHOR" "$LOCK_DST" <<'PY'
 import hashlib, json, os, sys
 up, repo, anchor, lock_rel = sys.argv[1:5]
 manifest = json.load(open(os.path.join(up, "tools/git/gates/gates.json")))
@@ -191,9 +265,14 @@ with open(lock_path, "w") as f:
     json.dump({"anchor": anchor, "files": files}, f, indent=1, ensure_ascii=False, sort_keys=True)
     f.write("\n")
 PY
-  echo "✔ [gates] 锚点已写: $LOCK_DST (anchor=$ANCHOR)"
+  then
+    [ -s "$REPO/$LOCK_DST" ] || die "锚点 lock 写入异常: $LOCK_DST"
+    echo "✔ [gates] 锚点已写: $LOCK_DST (anchor=$ANCHOR)"
+  else
+    die "锚点 lock 写入失败: $LOCK_DST"
+  fi
 fi
 
-if [ $fail -ne 0 ]; then echo "✗ [gates] --check 未通过"; exit 1; fi
+if [ $fail -ne 0 ]; then echo "✗ [gates] $MODE 存在失败项"; exit 1; fi
 echo "✔ [gates] $MODE 完成 (anchor=$ANCHOR)"
 exit 0

@@ -2,8 +2,10 @@
 # gates 面确定性测试（周界 PR 验证门, Q10; 仿 awesome-rules tools/test_* 先例）
 # 用法: bash tools/git/gates/gates-tests/test_mutation-gate.sh
 # 覆盖: 语言分派跳过链(T1-T4/T7/T9) / --ci 契约位 fail-closed(T6) / 接入不完整
-#       fail-closed(T5) / 143 终止预算放行(T5b) / PIT 模块循环 stub(T8) /
-#       gates-install 落地+对账(T10) / lefthook job 幂等注入(T11)
+#       fail-closed(T5) / 外部 143 不放行·真看门狗放行·预算非法·纯删除·空白路径
+#       (T5b-T5f) / PIT 模块循环 stub(T8) / gates-install 落地+对账+缺 lefthook 失败
+#       (T10/T12) / lefthook job 段限幂等注入(T11/T13) / 软链逃逸拒绝(T14) /
+#       子目录 --repo 归一(T15)
 # 兼容 macOS bash 3.2: 不用 mapfile/${var,,}; set -u 空数组用 ${DIRS[@]+...} 守卫
 set -u
 
@@ -13,7 +15,7 @@ DIRS=()
 
 ok()  { PASS=$((PASS+1)); echo "  ✓ $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  ✗ $1"; }
-
+# shellcheck disable=SC2329  # 经 trap cleanup EXIT 间接调用
 cleanup() {
   for d in ${DIRS[@]+"${DIRS[@]}"}; do rm -rf "$d" "$d.git" 2>/dev/null; done
 }
@@ -74,11 +76,58 @@ mkrepo; stage_ts; mkdir -p "$T/src"; echo "export const a = 1" > "$T/src/foo.ts"
 out=$(cd "$T" && PATH="$NPX:$PATH" bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
 if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '✗'; then ok "T5 接入不完整(npx 桩 exit 1) → fail"; else bad "T5 (rc=$rc) $out"; fi
 
-# T5b: stryker 被终止(rc 143/137) → 预算放行出口, 不绑架 push（零覆盖分支补测）
+# T5b: 外部 SIGTERM(rc 143) → 不放行——仅"看门狗确证"的超时才放行, 同状态码不可信
 printf '#!/usr/bin/env bash\nkill -TERM $$\n' > "$NPX/npx"
 mkrepo; stage_ts; mkdir -p "$T/src"; echo "export const a = 1" > "$T/src/foo.ts"; ahead
 out=$(cd "$T" && PATH="$NPX:$PATH" bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '放行'; then ok "T5b rc 143 → 预算放行"; else bad "T5b (rc=$rc) $out"; fi
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '✗'; then ok "T5b 外部 143 → fail(非看门狗确证不放行)"; else bad "T5b (rc=$rc) $out"; fi
+
+# T5c: 真看门狗超时 → 放行且进程树被收割; elapsed<10 是"孤儿 sleep 持捕获管道"的
+# 确定性 oracle——kill_tree 失效时 $() 会阻塞到 sleep 30 退出才见 EOF
+CHILDLOG="$NPX/child.pid"; export CHILDLOG
+cat > "$NPX/npx" <<'STUB'
+#!/usr/bin/env bash
+sleep 30 &
+echo $! > "$CHILDLOG"
+wait $!
+exit 143
+STUB
+chmod +x "$NPX/npx"
+mkrepo; stage_ts; mkdir -p "$T/src"; echo "export const a = 1" > "$T/src/foo.ts"; ahead
+t0=$(date +%s)
+out=$(cd "$T" && PATH="$NPX:$PATH" MUTATION_GATE_BUDGET=1 bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
+el=$(( $(date +%s) - t0 ))
+child=$(cat "$CHILDLOG"); dead=0
+for _ in 1 2 3 4 5; do kill -0 "$child" 2>/dev/null || { dead=1; break; }; sleep 0.3; done
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '放行' && [ "$el" -lt 10 ] && [ "$dead" -eq 1 ]; then
+  ok "T5c 看门狗超时 → 放行+进程树收割(el=${el}s)"
+else bad "T5c (rc=$rc el=${el}s dead=$dead) $out"; fi
+
+# T5d: MUTATION_GATE_BUDGET 非法 → fail-closed(sleep 拒收非法值, 看门狗行为不可预期)
+mkrepo; stage_ts; mkdir -p "$T/src"; echo "export const a = 1" > "$T/src/foo.ts"; ahead
+out=$(cd "$T" && PATH="$NPX:$PATH" MUTATION_GATE_BUDGET=abc bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'MUTATION_GATE_BUDGET 非法'; then ok "T5d 预算非法 → fail"; else bad "T5d (rc=$rc) $out"; fi
+
+# T5e: 纯删除推送(变更集仅含已删文件) → 无可变异目标, 跳过不绑架 push
+mkrepo; stage_ts; mkdir -p "$T/src"; echo "export const a = 1" > "$T/src/foo.ts"; ahead
+rm "$T/src/foo.ts"; ahead
+out=$(cd "$T" && PATH="$NPX:$PATH" bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
+mkrepo; stage_ts; mkdir -p "$T/src"; echo "export const a = 1" > "$T/src/foo.ts"
+git -C "$T" add -A; git -C "$T" -c commit.gpgsign=false commit -qm base; git -C "$T" push -q origin HEAD
+rm "$T/src/foo.ts"; ahead
+# T5f: 变更路径含空白 → --mutate 实参完整不被拆词
+ARGLOG="$NPX/args.log"; export ARGLOG
+cat > "$NPX/npx" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$ARGLOG"
+exit 0
+STUB
+chmod +x "$NPX/npx"
+mkrepo; stage_ts; mkdir -p "$T/src/my dir"; echo "export const a = 1" > "$T/src/my dir/a b.ts"; ahead
+out=$(cd "$T" && PATH="$NPX:$PATH" bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && grep -Fxq 'src/my dir/a b.ts' "$ARGLOG" && ! grep -Fxq 'src/my' "$ARGLOG"; then
+  ok "T5f 空白路径 → 单实参完整传递"
+else bad "T5f (rc=$rc) $(cat "$ARGLOG" 2>/dev/null | tr '\n' ' ')"; fi
 
 # T6: --ci 契约位 → fail-closed 拒绝
 mkrepo; run_gate --ci
@@ -90,6 +139,7 @@ if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '无 src/main/java'; then ok 
 
 # T8: java + pitest 模块 + stub mvn → 通过/失败两态（模块循环不真跑 mvn, 只验分派与出口码）
 STUB=$(mktemp -d "${TMPDIR:-/tmp}/gates-mvn.XXXXXX"); DIRS+=("$STUB")
+# shellcheck disable=SC2016  # 故意单引号: ${MVN_RC:-0} 须原样写进桩脚本
 printf '#!/usr/bin/env bash\nexit "${MVN_RC:-0}"\n' > "$STUB/mvn"; chmod +x "$STUB/mvn"
 mkrepo; printf 'java\n' > "$T/.lefthook-profile"
 printf '<project>\n  <plugin>org.pitest:pitest-maven</plugin>\n</project>\n' > "$T/pom.xml"
@@ -107,6 +157,14 @@ if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '不含 java/ts'; then ok "T9
 
 # T10: 落地 + 对账: full 覆盖 / profile 探测 / local 首落地 / lock / 漂移即败
 mkrepo; printf '{\n  "compilerOptions": {}\n}\n' > "$T/tsconfig.json"
+cat > "$T/lefthook.yml" <<'YML'
+pre-push:
+  piped: true
+  jobs:
+    sourcery-gate:
+      use_stdin: true
+      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/sourcery-gate.sh {push_files}
+YML
 out=$(bash "$GATES/gates-install.sh" --repo "$T" 2>&1); irc=$?
 if [ "$irc" -eq 0 ] \
   && cmp -s "$GATES/mutation-gate.sh" "$T/.lefthook/mutation-gate.sh" \
@@ -139,11 +197,62 @@ ls=$(grep -n 'sourcery-gate.sh {push_files}' "$T/lefthook.yml" 2>/dev/null | hea
 bash "$GATES/gates-install.sh" --repo "$T" >/dev/null 2>&1
 c2=$(grep -c '^    mutation-gate:' "$T/lefthook.yml" 2>/dev/null || echo 0)
 if [ "$c1" = "1" ] && [ "$c2" = "1" ] && [ -n "$lm" ] && [ -n "$ls" ] && [ "$lm" -gt "$ls" ] \
-  && grep -q 'bash .lefthook/mutation-gate.sh {push_files}' "$T/lefthook.yml"; then
-  ok "T11 job 注入锚位正确且幂等"
+  && grep -q 'run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/mutation-gate.sh' "$T/lefthook.yml" \
+  && ! grep -q 'mutation-gate.sh {push_files}' "$T/lefthook.yml"; then
+  ok "T11 job 注入锚位正确且幂等(保留 || 删除防护极性, 去 {push_files} 首推不绑架)"
 else
   bad "T11 c1=$c1 c2=$c2 lm=$lm ls=$ls"
 fi
+
+# T12: 无 lefthook.yml → install 仅告警放行; --check fail-closed(job 无处挂载)
+mkrepo; printf '{\n  "compilerOptions": {}\n}\n' > "$T/tsconfig.json"
+out=$(bash "$GATES/gates-install.sh" --repo "$T" 2>&1); irc=$?
+if [ "$irc" -eq 0 ] && printf '%s' "$out" | grep -q '无 lefthook.yml'; then ok "T12 install 无 lefthook.yml → 告警放行"; else bad "T12 (rc=$irc) $out"; fi
+out=$(bash "$GATES/gates-install.sh" --repo "$T" --check 2>&1); crc=$?
+if [ "$crc" -eq 1 ] && printf '%s' "$out" | grep -q 'lefthook.yml 缺席'; then ok "T12 --check 缺 lefthook.yml → 失败"; else bad "T12 (rc=$crc) $out"; fi
+
+# T13: 段限注入——pre-commit 段同名 job 不算在位; 注入插 pre-push jobs 子段末尾,
+# 不扰其后 2 空格属性行(parallel); 重复安装幂等
+mkrepo; printf '{\n  "compilerOptions": {}\n}\n' > "$T/tsconfig.json"
+cat > "$T/lefthook.yml" <<'YML'
+pre-commit:
+  jobs:
+    mutation-gate:
+      run: echo wrong-hook
+pre-push:
+  jobs:
+    sourcery-gate:
+      use_stdin: true
+      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/sourcery-gate.sh {push_files}
+  parallel: true
+YML
+bash "$GATES/gates-install.sh" --repo "$T" >/dev/null 2>&1
+pc1=$(awk '/^pre-push:/{f=1;next} f&&/^[^ \t]/{f=0} f&&/^    mutation-gate:/{c++} END{print c+0}' "$T/lefthook.yml")
+mg=$(grep -n '^    mutation-gate:' "$T/lefthook.yml" | tail -1 | cut -d: -f1)
+pa=$(grep -n '^  parallel:' "$T/lefthook.yml" | head -1 | cut -d: -f1)
+bash "$GATES/gates-install.sh" --repo "$T" >/dev/null 2>&1
+pc2=$(awk '/^pre-push:/{f=1;next} f&&/^[^ \t]/{f=0} f&&/^    mutation-gate:/{c++} END{print c+0}' "$T/lefthook.yml")
+bash "$GATES/gates-install.sh" --repo "$T" --check >/dev/null 2>&1; crc=$?
+if [ "$pc1" = "1" ] && [ "$pc2" = "1" ] && [ -n "$mg" ] && [ -n "$pa" ] && [ "$mg" -lt "$pa" ] && [ "$crc" -eq 0 ]; then
+  ok "T13 段限注入: pre-push 段内唯一, 插段末不扰后续属性, 幂等"
+else bad "T13 pc1=$pc1 pc2=$pc2 mg=$mg pa=$pa crc=$crc"; fi
+
+# T14: 目标路径含符号链接组件 → 拒绝写入(fail-closed), 仓外目录零写入
+mkrepo; printf '{\n  "compilerOptions": {}\n}\n' > "$T/tsconfig.json"
+OUTSIDE=$(mktemp -d "${TMPDIR:-/tmp}/gates-out.XXXXXX"); DIRS+=("$OUTSIDE")
+ln -s "$OUTSIDE" "$T/.lefthook"
+out=$(bash "$GATES/gates-install.sh" --repo "$T" 2>&1); irc=$?
+if [ "$irc" -eq 1 ] && printf '%s' "$out" | grep -q '符号链接' && [ -z "$(ls -A "$OUTSIDE")" ]; then
+  ok "T14 .lefthook 软链 → 拒绝且仓外零写入"
+else bad "T14 (rc=$irc) $out / outside: $(ls -A "$OUTSIDE")"; fi
+
+# T15: --repo 传仓内子目录 → 归一到仓根, 仓级文件不落子目录
+mkrepo; printf '{\n  "compilerOptions": {}\n}\n' > "$T/tsconfig.json"
+mkdir -p "$T/deep/sub"
+out=$(bash "$GATES/gates-install.sh" --repo "$T/deep/sub" 2>&1); irc=$?
+if [ "$irc" -eq 0 ] && [ -f "$T/.lefthook/mutation-gate.sh" ] && [ -f "$T/.lefthook-profile" ] && [ ! -e "$T/deep/sub/.lefthook" ]; then
+  ok "T15 子目录 --repo → 归一仓根落地"
+else bad "T15 (rc=$irc) $out"; fi
 
 echo
 echo "gates 测试: $PASS 通过, $FAIL 失败"
