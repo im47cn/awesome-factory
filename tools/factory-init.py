@@ -70,7 +70,10 @@ def die(msg: str):
 
 
 def run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd) if cwd else None)
+    # argv 列表直执、无 shell（门命令同契约，见 finish_init 的 FINAL_GATE_CMD）——
+    # 命令注入面结构性不存在；审计规则按「参数非静态字符串」泛报，显式豁免。
+    return subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        cmd, capture_output=True, text=True, cwd=str(cwd) if cwd else None)
 
 
 # ---------------------------------------------------------------- MISSION
