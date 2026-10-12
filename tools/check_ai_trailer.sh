@@ -26,6 +26,19 @@ BUILTIN_MARKERS=(
 RANGE=$1
 AUTHOR_RE=${AI_TRAILER_AUTHOR_RE:-}
 
+# range 以 - 开头会被 git log 当选项解析（如 --max-count=0 → 零提交静默过门），
+# 按「类似选项的参数」拒绝（Sourcery #1，门自身错误）
+case "$RANGE" in
+  -*) echo "非法 range（不得以 - 开头，防被解析为 git 选项）: $RANGE" >&2; exit 2 ;;
+esac
+
+# AUTHOR_RE 预检（Sourcery #4）：空范围时循环体不执行，坏正则会静默通过；
+# 此处先试编译（grep 非法 ERE → rc 2），fail-closed
+if [ -n "$AUTHOR_RE" ]; then
+  printf 'x\n' | grep -Eq "$AUTHOR_RE" 2>/dev/null
+  [ $? -eq 2 ] && { echo "AI_TRAILER_AUTHOR_RE 非法正则: $AUTHOR_RE" >&2; exit 2; }
+fi
+
 # 合法 trailer：正文任意行以 co-authored-by: 开头（大小写不敏感前缀匹配）
 has_trailer() { # has_trailer <body>
   local line
@@ -66,11 +79,8 @@ sha='' email='' body=''
 
     hits=''
     if [ -n "$AUTHOR_RE" ]; then
-      printf '%s\n' "$email" | grep -Eq "$AUTHOR_RE" 2>/dev/null
-      case $? in
-        0) hits="author-email:$email" ;;
-        2) echo "AI_TRAILER_AUTHOR_RE 非法正则: $AUTHOR_RE" >&2; exit 2 ;;
-      esac
+      # 正则合法性已在入口预检，此处只看匹配与否
+      printf '%s\n' "$email" | grep -Eq "$AUTHOR_RE" 2>/dev/null && hits="author-email:$email"
     fi
     for m in "${MARKERS[@]}"; do
       case "$body" in *"$m"*) hits="${hits:+$hits }marker:$m" ;; esac

@@ -159,6 +159,28 @@ else
   bad "T9 rc=$rc"
 fi
 
+# ── T10 类选项 range 注入（如 --max-count=0）→ rc 2，不静默过门 ────────
+newrepo
+rc=0
+(cd "$REPO" && bash "$W" "--max-count=0") >/dev/null 2>&1 || rc=$?
+if [ "$rc" = 2 ]; then
+  ok "T10 类选项range → 2"
+else
+  bad "T10 rc=$rc"
+fi
+rm -rf "$REPO"
+
+# ── T11 坏正则 + 空范围（无提交）→ rc 2，配置错误不因空范围漏检 ────────
+newrepo
+rc=0
+(cd "$REPO" && AI_TRAILER_AUTHOR_RE='([' bash "$W" "$BASE..$BASE") >/dev/null 2>&1 || rc=$?
+if [ "$rc" = 2 ]; then
+  ok "T11 坏正则+空范围 → 2"
+else
+  bad "T11 rc=$rc"
+fi
+rm -rf "$REPO"
+
 echo
 [ "$fails" = 0 ] && echo "check_ai_trailer 全部通过" || echo "$fails 项失败"
 exit $fails
