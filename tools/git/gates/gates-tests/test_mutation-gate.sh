@@ -109,12 +109,11 @@ out=$(cd "$T" && PATH="$NPX:$PATH" MUTATION_GATE_BUDGET=abc bash "$GATES/mutatio
 if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'MUTATION_GATE_BUDGET 非法'; then ok "T5d 预算非法 → fail"; else bad "T5d (rc=$rc) $out"; fi
 
 # T5e: 纯删除推送(变更集仅含已删文件) → 无可变异目标, 跳过不绑架 push
-mkrepo; stage_ts; mkdir -p "$T/src"; echo "export const a = 1" > "$T/src/foo.ts"; ahead
-rm "$T/src/foo.ts"; ahead
-out=$(cd "$T" && PATH="$NPX:$PATH" bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
 mkrepo; stage_ts; mkdir -p "$T/src"; echo "export const a = 1" > "$T/src/foo.ts"
 git -C "$T" add -A; git -C "$T" -c commit.gpgsign=false commit -qm base; git -C "$T" push -q origin HEAD
 rm "$T/src/foo.ts"; ahead
+out=$(cd "$T" && PATH="$NPX:$PATH" bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '无可变异目标'; then ok "T5e 纯删除 → 跳过"; else bad "T5e (rc=$rc) $out"; fi
 # T5f: 变更路径含空白 → --mutate 实参完整不被拆词
 ARGLOG="$NPX/args.log"; export ARGLOG
 cat > "$NPX/npx" <<'STUB'
