@@ -1,0 +1,19 @@
+{
+  "description": "门禁分发面清单（awesome-factory 唯一真相源，2026-10-12 裁定链 Q3-Q10 落地）。分类语义复刻 .factory/DISTRIBUTION.json 三态但通道完全独立、互不相交：full=零本地化 blob 覆盖（漂移=--check 失败=门禁失败）；local=首落地后归消费仓所有（上游只报告不覆盖）；anchor=消费仓 lock 文件记录上游 HEAD 锚点。命名消歧：本面是 StrykerJS/PIT 源码变异测试门禁；.factory/mutations/ 是工厂验门灵敏度的缺陷注入体系——同名异物。消费方式：bash tools/git/gates/gates-install.sh --repo <path>（对账：--check）",
+  "full": [
+    {
+      "src": "tools/git/gates/mutation-gate.sh",
+      "dst": ".lefthook/mutation-gate.sh"
+    }
+  ],
+  "local": [
+    {
+      "src": "tools/git/gates/stryker.config.json",
+      "dst": "stryker.config.json"
+    }
+  ],
+  "anchor": {
+    "lock": ".lefthook/gates-lock.json",
+    "policy": "upstream-HEAD-9"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-js/master/packages/api/schema/stryker-schema.json",
+  "_comment_local": "local 态模板：gates-install.sh 首落地后归消费仓所有，上游只报告不覆盖，仓侧定制属预期。接入前置（Q6-C 语义，缺任一门禁提示跳过）：① devDependencies 装 @stryker-mutator/core 与 @stryker-mutator/vitest-runner（或 jest-runner 并改 testRunner）② 存在 vitest/jest 测试基线。建议 reports/ 入 .gitignore。",
+  "testRunner": "vitest",
+  "concurrency": 2,
+  "incremental": true,
+  "incrementalFile": "reports/stryker-incremental.json",
+  "tempDirName": "node_modules/.cache/stryker",
+  "reporters": ["clear-text", "progress", "html"],
+  "htmlReporter": {
+    "fileName": "reports/mutation/mutation.html"
+  },
+  "thresholds": {
+    "high": 80,
+    "low": 60,
+    "break": 50
+  },
+  "mutate": [
+    "src/**/*.ts",
+    "!src/**/*.d.ts",
+    "!src/**/*.test.ts",
+    "!src/**/*.spec.ts",
+    "!src/mock/**",
+    "!src/scripts/**",
+    "!mock/**",
+    "!scripts/**"
+  ]
+}
