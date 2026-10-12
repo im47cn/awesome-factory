@@ -1,0 +1,28 @@
+{
+  "description": "工厂本地化配置（M4 + ADR-009）：周界/判据措辞/门命令/仓库参数/上游指针是数据不是代码。本文件每仓一份（skip 分发，永不跨仓覆盖）。fail-closed：缺失/损坏/缺键 = 使用方直接非零退出。周界须与 MISSION.md「周界（PERIMETER）」一致——guard.self_check 每次运行强制核对。S0 骨架：tools/factory-init.py 生成，TODO 标记字段待人工本地化。",
+  "perimeter": [
+    "docs/",
+    "src/",
+    "MISSION.md",
+    ".gitignore",
+    ".factory/"
+  ],
+  "reject_guidance": {
+    "a": "判据a（使命一致）：写明落点——fixture-repo 的哪个文件/模块，为何属维护而非范围变更（判据全文见 MISSION.md）；",
+    "b": "判据b（可判定）：把完成标准写成可机械验证的形式——验收 = 具体测试/脚本的断言；避免「持续/优化/修收」类开放措辞；",
+    "c": "判据c（不触周界）：触及周界的部分拆成独立 issue 走人类 PR（清单见 MISSION.md）；"
+  },
+  "repo_identity": "fixture-repo",
+  "reading_scopes": [
+    ".factory/",
+    "README.md",
+    "docs/",
+    "src/"
+  ],
+  "review_basis": "<TODO: 人工填写——review 节点审查依据，如 docs/adr/ + 运维手册路径>",
+  "final_gate_cmd": "false",
+  "pr_review_skills": [],
+  "upstream_repo": "<TODO: 上游仓 slug>",
+  "upstream_path": "/fake/upstream",
+  "feedback_branch_prefix": "feedback/fixture-repo"
+}

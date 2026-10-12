@@ -318,6 +318,11 @@ python3 .factory/factory_lib.py parallel-gate --failed-tags /tmp/failed.txt
 
 ## 移植到其他仓库（ADR-009 后：一份配置 + 两条命令）
 
+> 正道 = `python3 tools/factory-init.py init <repo-path> --perimeter ...`
+> （两段式：拷贝 full 面 + 骨架生成 + mutations 强制重证 + 注册表登记，
+> 见 [docs/onboarding.md §2](../docs/onboarding.md)）。下述四步是它的
+> 手工等价展开（CLI 不可用时用）。
+
 本地化已全部数据化到 `factory-local.json`（M4 + ADR-009），链脚本与
 prompts 零宿主专名（gauntlet `factory-portability` 门机械化盯防）。
 移植（如 etf-radar）只需：
