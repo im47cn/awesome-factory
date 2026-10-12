@@ -1,0 +1,86 @@
+{
+  "description": "S0 结构缺陷集（tools/factory-init.py 生成，锚点绑定本仓周界；行为破坏类 B-1xx 待人工按目标仓测试面扩充后重证）",
+  "defects": [
+    {
+      "id": "G-01",
+      "description": "篡改治理宪法：MISSION.md 铁律降级为可选建议",
+      "target": "MISSION.md",
+      "find": "## 铁律",
+      "replace": "## 铁律（工厂可自行修订）",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-02",
+      "description": "篡改规范真相源：.gitignore 标题注入豁免条款",
+      "target": ".gitignore",
+      "find": ".factory/locks/",
+      "replace": ".factory/locks/（工厂豁免条款适用）",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-03",
+      "description": "篡改验证门自身：guard.py 周界配置载入改向不存在文件致门 fail-closed（rc=2 应视为拦截）",
+      "target": ".factory/guard.py",
+      "find": "cfg_path = Path(__file__).resolve().parent / \"factory-local.json\"",
+      "replace": "cfg_path = Path(__file__).resolve().parent / \"factory-local-missing.json\"",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-04",
+      "description": "篡改质检线：factory-local.json final_gate_cmd 被注空——真实测试门失效",
+      "target": ".factory/factory-local.json",
+      "find": "\"final_gate_cmd\": \"",
+      "replace": "\"final_gate_cmd\": \"true #",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "M-01",
+      "description": "周界清单单边漂移：MISSION 增条目而 guard 副本未同步（self_check 应发现不一致）",
+      "target": "MISSION.md",
+      "find": "- `docs/`",
+      "replace": "- `docs/`\n- `factory-extra/`",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "M-02",
+      "description": "周界指向不存在路径：目录条目改名（self_check 存在性检查应拦截）",
+      "target": "MISSION.md",
+      "find": "- `docs/`",
+      "replace": "- `docs/renamed/`",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-06",
+      "description": "点文件周界正向证据：任何触碰必拦——前缀匹配对点前缀路径有效",
+      "target": ".gitignore",
+      "find": ".factory/locks/",
+      "replace": "#.factory/locks/",
+      "gate": "guard",
+      "expect_block": true
+    },
+    {
+      "id": "G-05",
+      "description": "normalize 点前缀退化实证：lstrip(\"./\") 连剥前导点/斜杠，周界失明放行——本条 expect_block=false 钉死该缺陷形态（失明门必放行）；若 guard 意外拦截（rc≠0）说明 normalize 被改宽，须人审。正向 kill 证据由 G-06 承载",
+      "target": ".factory/guard.py",
+      "find": "    p = path.strip().replace(\"\\\\\", \"/\")\n    return p.removeprefix(\"./\")",
+      "replace": "    return path.strip().lstrip(\"./\").replace(\"\\\\\", \"/\")",
+      "gate": "guard",
+      "expect_block": false
+    },
+    {
+      "id": "B-01",
+      "description": "良性变更负例：CHANGELOG.md 标题追加维护署名，门必须放行（防门全拒）",
+      "target": "CHANGELOG.md",
+      "find": "# fixture-repo 变更日志",
+      "replace": "# fixture-repo 变更日志（工厂参与维护）",
+      "gate": "guard",
+      "expect_block": false
+    }
+  ]
+}

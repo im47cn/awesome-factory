@@ -5,6 +5,7 @@
 [awesome-rules](https://github.com/im47cn/awesome-rules) 整体迁出，成为 full 面
 文件的唯一上游真相源。
 
+- 接入指南（新电脑 / 新项目）：[docs/onboarding.md](docs/onboarding.md)
 - 运维手册：[.factory/README.md](.factory/README.md)
 - 治理宪法：[MISSION.md](MISSION.md)
 - 设计文档与决策：[docs/design/](docs/design/)、[docs/adr/](docs/adr/)
