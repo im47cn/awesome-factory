@@ -26,6 +26,24 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
+import tempfile
+import atexit
+import shlex
+
+# Only exact runtime tools are exposed; sibling CLIs never enter the sealed PATH.
+_TOOL_BIN = tempfile.mkdtemp(prefix="factory-test-tools-")
+for _tool in ("python3", "git", "bash"):
+    _target = sys.executable if _tool == "python3" else shutil.which(_tool)
+    if _target:
+        _entry = os.path.join(_TOOL_BIN, _tool)
+        if _tool == "python3":
+            os.symlink(_target, _entry)
+        else:
+            with open(_entry, "w") as _handle:
+                _handle.write("#!/bin/sh\nexec " + shlex.quote(_target) + ' "$@"\n')
+            os.chmod(_entry, 0o755)
+atexit.register(shutil.rmtree, _TOOL_BIN, ignore_errors=True)
 
 # 仓库发现/定位类变量（泄漏即改写 -C/子目录发现结果）。
 _STALE = (
@@ -46,19 +64,13 @@ _FALLBACK_DIRS = ("/usr/bin", "/bin")
 
 
 def _sealed_path() -> str:
-    """PATH 白名单：锚定工具所在目录 ∪ POSIX 标准目录。
+    """仅暴露导入时选定的 Python/Git/Bash，保留标准目录工具。
 
-    目录级白名单（非工具级）：够跑 python3→bash→git 测试链即可，
-    宿主私有目录（pip user bin 等）整体剥除——sourcery 不可见 →
-    夹具闸 command -v 探测跳过 → 零出网（issue #109 陷阱①）。
-
-    锚定解析强制走 POSIX 标准目录（PR #111 Sourcery 评论①）：宿主
-    PATH 永不参与白名单推导——锚定工具与 sourcery 同目录共存时
-    （如 homebrew bin 同时装 python3 与 sourcery），该目录不可再
-    泄漏进白名单。锚定工具均在标准目录内可解析（/usr/bin/python3、
-    /usr/bin/git、/bin/bash），解析失败亦有 _FALLBACK_DIRS 兜底。
+    精确工具入口避免把宿主目录中的 sourcery 等 CLI 带入夹具。
+    Git/Bash 使用 exec 包装，兼容按自身路径定位资源的运行器。
+    Python 使用当前解释器，避免 macOS 系统 Python 版本过旧。
     """
-    dirs: list[str] = []
+    dirs: list[str] = [_TOOL_BIN]
     for tool in _ANCHOR_TOOLS:
         where = shutil.which(tool, path=os.pathsep.join(_FALLBACK_DIRS))
         d = os.path.dirname(where) if where else None

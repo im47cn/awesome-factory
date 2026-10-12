@@ -22,7 +22,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from gitenv import git_env  # noqa: E402  (tests/ 兄弟模块，pytest rootdir 注入)
+from gitenv import git_env, _sealed_path  # noqa: E402  (tests/ 兄弟模块，pytest rootdir 注入)
 
 FACTORY = Path(__file__).resolve().parents[1]
 
@@ -84,7 +84,7 @@ def _sandbox(tmp_path: Path, floor: str | None, ledger: str | None) -> Path:
 def _run(cmd: list[str], repo: Path, tmp_path: Path, *, with_stubs: bool,
          extra_env: dict | None = None) -> subprocess.CompletedProcess:
     """with_stubs=True → gh/omp 桩在前；False → 最小 PATH（无 gh，隔离真 CLI）。"""
-    path = f"{tmp_path}/bin:{os.environ['PATH']}" if with_stubs else "/usr/bin:/bin"
+    path = f"{tmp_path}/bin:{os.environ['PATH']}" if with_stubs else _sealed_path()
     env = {"PATH": path, "HOME": os.environ.get("HOME", "/tmp"),
            "GH_REPO": "sandbox/repo", "SENTINEL_MARK": str(tmp_path / "sentinel"),
            "STUB_CALLS": str(tmp_path / "calls"),

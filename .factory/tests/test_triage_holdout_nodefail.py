@@ -51,6 +51,7 @@ export STUB_MODE="$4"
 node_timeout() { echo 30m; }
 _node_metric() { :; }
 json_field() { python3 "${REPO}/.factory/factory_lib.py" jfield "$@"; }
+source "${REPO}/.factory/acceptance-lib.sh"
 __FUNC__
 __CALL__
 """

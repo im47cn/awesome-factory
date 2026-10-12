@@ -24,7 +24,9 @@
     "sync-from-upstream.sh",
     "downstream-check.sh",
     "regression/dispatch_liveness.py",
-    "mutations/run.py"
+    "mutations/run.py",
+    "acceptance.py",
+    "acceptance-lib.sh"
   ],
   "local": {},
   "skip": [
@@ -41,7 +43,9 @@
     "downstream.json",
     "regression/README.md",
     "regression/daily-regression.sh",
-    "regression/machine-id"
+    "regression/machine-id",
+    "acceptance-README.md",
+    "acceptance-contracts/"
   ],
   "anchor_policy": "下游 .factory/upstream-lock.json 记录上次同步的上游 commit（M2 起含 upstream 路径字段）；--check 对比该锚点与上游 HEAD 的 full 文件 blob，漂移即提醒（追平或反哺二选一），对齐 scripts/plugin-lock.json 的 blob 锁定模式"
 }

@@ -36,6 +36,11 @@
 | `downstream-check.sh` + `downstream.local.json` | B2 中心集中巡检（ADR-011）：12 仓清单（gitignored 本地数据，ADR-012——tracked `downstream.json` 仅空模板；2026-09-29 迁入时收编 etf-radar 与 wop-specs）；`--check` 逐仓漂移检查 + `--apply-commit` 漂移仓单提交追平；一律 `--anchor main` 跑中心版脚本；漂移 osascript 通知（`FACTORY_NO_NOTIFY=1` 关断） |
 
 
+## 验收契约与事故回归
+
+新增可选契约门：批准版本先冻结，最终提交逐项独立复跑，Holdout 与交付前校验绑定。
+接入、收据及事故红绿端用法见 [acceptance-README](acceptance-README.md)。
+
 ## 前置条件
 - `omp` CLI（AI 节点引擎；每节点独立进程 = 物理级 fresh context）
 - `python3`（guard / mutations / hosting / JSON 解析）

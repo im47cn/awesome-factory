@@ -20,14 +20,14 @@
 import os
 import shutil
 
-from gitenv import _FALLBACK_DIRS, _sealed_path, git_env
+from gitenv import _FALLBACK_DIRS, _TOOL_BIN, _sealed_path, git_env
 
 
 def test_path_whitelisted_to_anchor_dirs():
     env = git_env()
     dirs = env["PATH"].split(os.pathsep)
     # 白名单 ⊆ 锚定目录 ∪ POSIX 标准目录（宿主私有目录整体剥除）
-    allowed = {"/usr/bin", "/bin"}
+    allowed = {_TOOL_BIN, "/usr/bin", "/bin"}
     for tool in ("python3", "git", "bash"):
         if where := shutil.which(tool):
             allowed.add(os.path.dirname(where))
@@ -104,3 +104,8 @@ def test_base_not_mutated():
     base = {"GIT_DIR": "x"}
     git_env(base)
     assert base == {"GIT_DIR": "x"}
+
+
+def test_sealed_runtime_contains_only_required_tools():
+    assert set(os.listdir(_TOOL_BIN)) == {"python3", "git", "bash"}
+    assert os.path.realpath(shutil.which("python3", path=_sealed_path())) == os.path.realpath(__import__("sys").executable)
