@@ -5,7 +5,7 @@
 #       fail-closed(T5) / 外部 143 不放行·真看门狗放行·预算非法·纯删除·空白路径
 #       (T5b-T5f) / PIT 模块循环 stub(T8) / gates-install 落地+对账+缺 lefthook 失败
 #       (T10/T12) / lefthook job 段限幂等注入(T11/T13) / 软链逃逸拒绝(T14) /
-#       子目录 --repo 归一(T15)
+#       子目录 --repo 归一(T15) / stryker 延迟落地三态(T16-T17) / lock prettier 中性(T18)
 # 兼容 macOS bash 3.2: 不用 mapfile/${var,,}; set -u 空数组用 ${DIRS[@]+...} 守卫
 set -u
 
@@ -252,6 +252,38 @@ out=$(bash "$GATES/gates-install.sh" --repo "$T/deep/sub" 2>&1); irc=$?
 if [ "$irc" -eq 0 ] && [ -f "$T/.lefthook/mutation-gate.sh" ] && [ -f "$T/.lefthook-profile" ] && [ ! -e "$T/deep/sub/.lefthook" ]; then
   ok "T15 子目录 --repo → 归一仓根落地"
 else bad "T15 (rc=$irc) $out"; fi
+
+# T16: 有 vitest/jest 基线但未装 @stryker-mutator/* → stryker.config.json 延迟落地
+# (配置在场+依赖缺席时 gate 对 src/ 生产推送 fail-closed, 首落地即埋拦截器)
+mkrepo; printf '{\n  "compilerOptions": {}\n}\n' > "$T/tsconfig.json"
+printf '{\n  "devDependencies": {\n    "vitest": "^1.0.0"\n  }\n}\n' > "$T/package.json"
+cat > "$T/lefthook.yml" <<'YML'
+pre-push:
+  piped: true
+  jobs:
+    sourcery-gate:
+      use_stdin: true
+      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/sourcery-gate.sh {push_files}
+YML
+out=$(bash "$GATES/gates-install.sh" --repo "$T" 2>&1); irc=$?
+if [ "$irc" -eq 0 ] && [ ! -e "$T/stryker.config.json" ] \
+  && printf '%s' "$out" | grep -q '延迟落地' \
+  && [ -f "$T/.lefthook/gates-lock.json" ]; then ok "T16 vitest 基线缺 stryker 依赖 → config 延迟落地"; else bad "T16 (rc=$irc) $out"; fi
+out=$(bash "$GATES/gates-install.sh" --repo "$T" --check 2>&1); crc=$?
+if [ "$crc" -eq 0 ] && printf '%s' "$out" | grep -q '延迟落地中'; then ok "T16 --check 延迟态 → 报告不拦截"; else bad "T16 --check (rc=$crc) $out"; fi
+
+# T17: 补装 @stryker-mutator/* → 延迟解除, config 正常首落地且入锁
+printf '{\n  "devDependencies": {\n    "@stryker-mutator/core": "^8.0.0",\n    "vitest": "^1.0.0"\n  }\n}\n' > "$T/package.json"
+out=$(bash "$GATES/gates-install.sh" --repo "$T" 2>&1); irc=$?
+if [ "$irc" -eq 0 ] && cmp -s "$GATES/stryker.config.json" "$T/stryker.config.json" \
+  && grep -q 'stryker.config.json' "$T/.lefthook/gates-lock.json"; then ok "T17 装 @stryker-mutator/* → config 落地入锁"; else bad "T17 (rc=$irc) $out"; fi
+
+# T18: lock prettier 中性格式: 2 空格缩进+尾换行, 消费仓 prettier --write 不重排
+if grep -q '^  "anchor":' "$T/.lefthook/gates-lock.json" \
+  && grep -q '^  "files":' "$T/.lefthook/gates-lock.json" \
+  && [ -z "$(tail -c 1 "$T/.lefthook/gates-lock.json")" ]; then
+  ok "T18 lock 格式 prettier 中性(2 空格+尾换行)"
+else bad "T18 $(tr '\n' ' ' < "$T/.lefthook/gates-lock.json" | cut -c1-120)"; fi
 
 echo
 echo "gates 测试: $PASS 通过, $FAIL 失败"

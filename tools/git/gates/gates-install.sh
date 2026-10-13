@@ -88,6 +88,16 @@ detect_profile() { # $1=仓目录 → stdout: java[,python][,ts] 或空
   printf '%s' "$out"
 }
 
+# stryker.config.json 延迟落地判据: 有 vitest/jest 测试基线却未装 @stryker-mutator/* 时,
+# 配置在场即武装 gate 的 TS 分支而 npx 必败(依赖缺席 fail-closed)——首落地即埋推送拦截器。
+# 判据与 mutation-gate.sh 的依赖探测同源(package.json 键级): 无基线/已装依赖均不延迟。
+stryker_defer() { # $1=仓目录 → 0=延迟落地 / 1=正常落地
+  [ -f "$1/package.json" ] || return 1
+  grep -qE '"(vitest|jest)"' "$1/package.json" || return 1
+  grep -q '"@stryker-mutator/' "$1/package.json" && return 1
+  return 0
+}
+
 fail=0
 
 # ── ① 语言声明 ──────────────────────────────────────────────────────────────
@@ -134,6 +144,10 @@ while read -r src dst; do
   [ -f "$s" ] || die "上游缺失: $src"
   if [ "$MODE" = install ]; then
     if [ ! -f "$d" ]; then
+      if [ "$dst" = stryker.config.json ] && stryker_defer "$REPO"; then
+        echo "○ [gates] local 延迟落地: ${dst}——有 vitest/jest 基线但未装 @stryker-mutator/*（依赖缺席时 gate fail-closed, 首落地即拦 src/ 生产推送）; 装依赖后重跑 install 落地"
+        continue
+      fi
       guard_dest "$d"
       mkdir -p "$(dirname "$d")" || die "创建目录失败: $(dirname "$d")"
       cp "$s" "$d" || die "写入失败: $dst"
@@ -145,6 +159,8 @@ while read -r src dst; do
     fi
   else
     if [ -f "$d" ]; then echo "✔ [gates] local 已落地: $dst"
+    elif [ "$dst" = stryker.config.json ] && stryker_defer "$REPO"; then
+      echo "○ [gates] local 延迟落地中: ${dst}——有 vitest/jest 基线但未装 @stryker-mutator/*（依赖就位后重跑 install 落地）"
     else echo "○ [gates] local 未落地: ${dst}（install 时首落地）"; fi
   fi
 done < <(list_face local)
@@ -262,7 +278,8 @@ for face in ("full", "local"):
 lock_path = os.path.join(repo, lock_rel)
 os.makedirs(os.path.dirname(lock_path), exist_ok=True)
 with open(lock_path, "w") as f:
-    json.dump({"anchor": anchor, "files": files}, f, indent=1, ensure_ascii=False, sort_keys=True)
+    # indent=2 + 尾换行 = prettier 默认 JSON 排版: 消费仓 prettier --write 不再确定性重排 lock
+    json.dump({"anchor": anchor, "files": files}, f, indent=2, ensure_ascii=False, sort_keys=True)
     f.write("\n")
 PY
   then
