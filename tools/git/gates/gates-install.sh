@@ -88,6 +88,43 @@ detect_profile() { # $1=仓目录 → stdout: java[,python][,ts] 或空
   printf '%s' "$out"
 }
 
+# stryker.config.json 延迟落地判据(依赖未就绪不埋 fail-closed 拦截器)。就绪 =
+# package.json 键级依赖齐全(vitest/jest 基线 + @stryker-mutator/core + 对应
+# *-runner; python3 解析, 防 scripts 文本误判与"装 core 缺 runner"的部分声明)
+# 且已有测试文件(无测试基线时 stryker 必败, 落地即拦生产推送)。无 package.json
+# 不延迟(gate 运行时自会跳过, 模板即接入文档); python3 缺席/JSON 非法一律延迟
+# ——判据只会多延迟不会漏拦, 保守向安全。与 mutation-gate.sh 探测同源但更严。
+stryker_defer() { # $1=仓目录 → 0=延迟落地 / 1=就绪可落地
+  [ -f "$1/package.json" ] || return 1
+  python3 - "$1" <<'PY' 2>/dev/null && return 1
+import json, os, sys
+repo = sys.argv[1]
+try:
+    pkg = json.load(open(os.path.join(repo, "package.json")))
+except Exception:
+    sys.exit(1)  # JSON 非法 → 延迟(保守)
+deps = {}
+for k in ("dependencies", "devDependencies", "optionalDependencies"):
+    d = pkg.get(k) if isinstance(pkg, dict) else None
+    if isinstance(d, dict):
+        deps.update(d)
+runners = [r for r in ("vitest", "jest") if r in deps]
+if not runners:
+    sys.exit(1)  # 无测试基线依赖键 → 延迟
+need = ["@stryker-mutator/core"] + ["@stryker-mutator/%s-runner" % r for r in runners]
+if any(p not in deps for p in need):
+    sys.exit(1)  # core/runner 缺任一 → 延迟(部分声明跑不起来)
+exts = (".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".test.mjs", ".test.cjs",
+        ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx", ".spec.mjs", ".spec.cjs")
+for root, dirs, files in os.walk(repo):
+    dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", "dist", "build")]
+    if any(f.endswith(exts) for f in files):
+        sys.exit(0)  # 就绪
+sys.exit(1)  # 0 测试文件 → 延迟
+PY
+  return 0
+}
+
 fail=0
 
 # ── ① 语言声明 ──────────────────────────────────────────────────────────────
@@ -134,17 +171,29 @@ while read -r src dst; do
   [ -f "$s" ] || die "上游缺失: $src"
   if [ "$MODE" = install ]; then
     if [ ! -f "$d" ]; then
+      if [ "$dst" = stryker.config.json ] && stryker_defer "$REPO"; then
+        echo "○ [gates] local 延迟落地: ${dst}——依赖/测试基线未就绪（runner 齐备且有测试文件前, gate 对 src/ 生产推送 fail-closed, 落地即埋拦截器）; 就绪后重跑 install 落地"
+        continue
+      fi
       guard_dest "$d"
       mkdir -p "$(dirname "$d")" || die "创建目录失败: $(dirname "$d")"
       cp "$s" "$d" || die "写入失败: $dst"
       echo "✔ [gates] local 首落地: $src → ${dst}（此后归仓所有, 上游只报告不覆盖）"
     elif [ "$(sha "$s")" != "$(sha "$d")" ]; then
       echo "○ [gates] local 漂移(不覆盖, 仅报告): $dst 与模板有差异——仓侧定制属预期"
+    elif [ "$dst" = stryker.config.json ] && stryker_defer "$REPO"; then
+      rm -f "$d" || die "回收失败: $dst"
+      echo "○ [gates] local 延迟回收: ${dst}——旧装落地仍为未修改模板, 依赖/测试基线未就绪时在场即埋拦截器; 已回收, 就绪后重跑 install 落地（仓侧定制不受影响）"
     else
       echo "✔ [gates] local 一致: $dst"
     fi
   else
-    if [ -f "$d" ]; then echo "✔ [gates] local 已落地: $dst"
+    if [ -f "$d" ]; then
+      if [ "$dst" = stryker.config.json ] && [ "$(sha "$s")" = "$(sha "$d")" ] && stryker_defer "$REPO"; then
+        echo "○ [gates] local 延迟条件成立: ${dst} 仍为未修改模板——重跑 install 回收（就绪则保留启用）"
+      else echo "✔ [gates] local 已落地: $dst"; fi
+    elif [ "$dst" = stryker.config.json ] && stryker_defer "$REPO"; then
+      echo "○ [gates] local 延迟落地中: ${dst}——依赖/测试基线未就绪（就绪后重跑 install 落地）"
     else echo "○ [gates] local 未落地: ${dst}（install 时首落地）"; fi
   fi
 done < <(list_face local)
@@ -262,7 +311,8 @@ for face in ("full", "local"):
 lock_path = os.path.join(repo, lock_rel)
 os.makedirs(os.path.dirname(lock_path), exist_ok=True)
 with open(lock_path, "w") as f:
-    json.dump({"anchor": anchor, "files": files}, f, indent=1, ensure_ascii=False, sort_keys=True)
+    # indent=2 + 尾换行 = prettier 默认 JSON 排版: 消费仓 prettier --write 不再确定性重排 lock
+    json.dump({"anchor": anchor, "files": files}, f, indent=2, ensure_ascii=False, sort_keys=True)
     f.write("\n")
 PY
   then
