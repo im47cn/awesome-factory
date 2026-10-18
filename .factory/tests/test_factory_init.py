@@ -61,7 +61,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL = REPO_ROOT / "tools" / "factory-init.py"
 
-pytestmark = pytest.mark.skipif(not TOOL.exists(), reason="tools/factory-init.py 不在本仓（下游分发面）")
+if not TOOL.exists():
+    # 模块级守卫：skipif 只护执行期，模块级 read_text 在收集期先炸（下游
+    # 整目录收集即 error）——allow_module_level 整文件跳过
+    pytest.skip("tools/factory-init.py 不在本仓（下游分发面）", allow_module_level=True)
 
 REGISTRY_ENV = "FACTORY_REGISTRY"
 PLIST_ENV = "FACTORY_HUB_PLIST"
