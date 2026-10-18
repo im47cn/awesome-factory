@@ -1097,10 +1097,17 @@ class CodeupAdapter:
                 time.sleep(0.05)
                 continue
             break
-        with contextlib.suppress(OSError):
+        try:
             with open(os.path.join(lock_dir, "pid"), "w",
                       encoding="ascii") as fh:
                 fh.write(str(os.getpid()))
+        except OSError as e:
+            # 无 pid 残锁会被判陈旧致另一进程接管（双写）：释放并拒持锁
+            shutil.rmtree(lock_dir, ignore_errors=True)
+            raise HostingError(
+                f"add {name}: 锁 pid 写入失败（{e}），fail-closed 拒持锁",
+                code=1,
+            ) from e
         try:
             yield
         finally:
