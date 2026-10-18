@@ -69,12 +69,11 @@ PLIST_ENV = "FACTORY_HUB_PLIST"
 LABELS = ("factory:accepted", "factory:rejected", "factory:needs-review", "factory:in-progress")
 
 # 生成标记值从工具源码提取（不硬编码副本，防双真相源漂移）
-MARKER_VAL = re.search(r'MARKER = "([^"]+)"', TOOL.read_text(encoding="utf-8")).group(1)
+MARKER_VAL = re.search(r'MARKER = "([^"]+)"', TOOL.read_text(encoding="utf-8"))[1]
 
 
 def run_tool(args: list[str], env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update(env_extra or {})
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | (env_extra or {})
     return subprocess.run(
         [sys.executable, str(TOOL), *args],
         capture_output=True, text=True, env=env, timeout=600,
@@ -336,9 +335,6 @@ class TestConcurrencyAndDataLoss:
     def test_f19_skeleton_deterministic(self, tmp_path):
         repo_a = make_fixture(tmp_path, "det-a")
         repo_b = make_fixture(tmp_path, "det-b")
-        # 同仓名同输入才字节一致——用同一名字造两份
-        for name in ("det-a", "det-b"):
-            pass
         run_tool(["init", str(repo_a), "--upstream", "/fake/upstream"], base_env(tmp_path))
         run_tool(["init", str(repo_b), "--upstream", "/fake/upstream"], base_env(tmp_path))
         # 仓名不同属预期差异：改名后比对
