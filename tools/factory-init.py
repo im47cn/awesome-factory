@@ -7,7 +7,8 @@
 可判定的中间态（exit 1），而不是靠文档叮嘱。
 
 子命令:
-  init <repo-path> [--scope S] [--perimeter "p1,p2,..."] [--upstream PATH]
+  init <repo-path> [--scope S] [--project-type auto|frontend|backend|fullstack]
+       [--mode full|local] [--perimeter "p1,p2,..."] [--upstream PATH]
        [--final-gate-cmd CMD] [--no-register] [--no-labels]
       两段式:
         第一段（无 --perimeter）: 拷贝上游 full 面 → 生成 MISSION.md /
@@ -62,6 +63,10 @@ DAILY_LABEL = "com.im47cn.factory.daily"
 PLIST_CRED_KEYS = ("YUNXIAO_ACCESS_TOKEN", "CODEUP_ORG_ID", "CODEUP_SPACE_ID")
 FOUR_PIECE = ("cron-dispatch.sh", "breaker.sh", "triage-batch.sh", "dispatch.sh")
 B01_CANDIDATES = ("CHANGELOG.md", "README.md", "CONTRIBUTING.md", "docs/README.md")
+
+# 本地 Factory 只需要治理锁、工厂库和 mutation runner；远程调度/托管/验收
+# 面在 `--mode full` 才安装，避免前端/后端本地仓出现不使用的脚本。
+LOCAL_FULL = ("guard.py", "factory_lib.py", "mutations/run.py")
 
 
 def die(msg: str):
@@ -160,7 +165,10 @@ LOCAL_DESCRIPTION = (
 
 def gen_factory_local(name: str, entries: list[str], upstream_path: str,
                       upstream_repo: str, final_gate: str,
-                      reading_scopes: list[str], port_point: str | None) -> str:
+                      reading_scopes: list[str], port_point: str | None,
+                      project_type: str = "fullstack",
+                      execution_mode: str = "full",
+                      local_runner: str | None = None) -> str:
     cfg: dict = {
         "description": LOCAL_DESCRIPTION,
         "perimeter": entries,
@@ -181,6 +189,16 @@ def gen_factory_local(name: str, entries: list[str], upstream_path: str,
         "upstream_path": upstream_path,
         "feedback_branch_prefix": f"feedback/{name}",
     }
+    if execution_mode == "local":
+        cfg.update({
+            "project_type": project_type,
+            "execution_mode": "local",
+            "remote_side_effects": False,
+            "auto_commit": False,
+        })
+        cfg["init_profile"] = "local-minimal"
+        if local_runner:
+            cfg["local_runner"] = local_runner
     if port_point:
         cfg["port_point"] = port_point
     return json.dumps(cfg, ensure_ascii=False, indent=2) + "\n"
@@ -208,7 +226,7 @@ def load_full_manifest() -> list[str]:
     return json.loads(DISTRIBUTION.read_text(encoding="utf-8"))["full"]
 
 
-def verify_factory_provenance(repo: Path) -> None:
+def verify_factory_provenance(repo: Path, manifest: list[str] | None = None) -> None:
     """现有 .factory/ 的 full 面文件必须与上游字节一致，否则拒绝执行。
 
     MISSION 生成标记可被目标仓伪造，不能作来源证明（Sourcery 阻断，
@@ -216,7 +234,7 @@ def verify_factory_provenance(repo: Path) -> None:
     mutations/run.py，后续调度还会跑 full 面 shell——只信与上游分发面
     字节一致的文件。缺失 = 安装不完整；漂移 = 异源或待追平，均 fail-closed。
     """
-    for entry in load_full_manifest():
+    for entry in (manifest or load_full_manifest()):
         if entry.endswith("/"):
             continue
         dst = repo / ".factory" / entry
@@ -227,7 +245,7 @@ def verify_factory_provenance(repo: Path) -> None:
                 "sync-from-upstream 追平后重跑；否则人工移除 .factory/ 再 init。")
 
 
-def copy_full_face(repo: Path) -> list[str]:
+def copy_full_face(repo: Path, entries: list[str] | None = None) -> list[str]:
     """按清单拷贝 full 面（文件直接覆盖、目录整树，排除运行时产物）。
 
     只写 .factory/ 内部；skip 面不在清单中，结构性不拷贝（F17）。
@@ -235,7 +253,7 @@ def copy_full_face(repo: Path) -> list[str]:
     dst_root = repo / ".factory"
     dst_root.mkdir(parents=True)
     copied = []
-    for entry in load_full_manifest():
+    for entry in (entries or load_full_manifest()):
         src = UPSTREAM / ".factory" / entry
         dst = dst_root / entry
         if not src.exists():
@@ -247,6 +265,45 @@ def copy_full_face(repo: Path) -> list[str]:
             shutil.copy2(src, dst)
         copied.append(entry)
     return copied
+
+
+def detect_project_type(repo: Path) -> str:
+    """按仓库事实选择初始化 profile，无法判断时 fail-closed 为 fullstack。"""
+    frontend = any((repo / p).exists() for p in (
+        "package.json", "pnpm-lock.yaml", "yarn.lock", "package-lock.json",
+    )) or any((repo / p).is_dir() for p in ("src", "app")) and any(
+        (repo / p).exists() for p in ("vite.config.ts", "vite.config.js", "next.config.js")
+    )
+    backend = any((repo / p).exists() for p in (
+        "pom.xml", "build.gradle", "build.gradle.kts", "go.mod", "Cargo.toml",
+        "requirements.txt", "pyproject.toml", "manage.py",
+    ))
+    if frontend and backend:
+        return "fullstack"
+    if frontend:
+        return "frontend"
+    if backend:
+        return "backend"
+    return "fullstack"
+
+
+def recommended_gate(repo: Path, project_type: str) -> str:
+    """只在命令和项目文件同时存在时推荐门，避免生成不可执行的假命令。"""
+    if project_type == "frontend":
+        if (repo / "scripts/factory-gate.sh").exists():
+            return "bash scripts/factory-gate.sh"
+        if (repo / "package.json").exists():
+            return "pnpm run typecheck"
+    if project_type == "backend":
+        if (repo / "mvnw").exists():
+            return "./mvnw test"
+        if (repo / "pom.xml").exists():
+            return "mvn test"
+        if (repo / "go.mod").exists():
+            return "go test ./..."
+        if (repo / "pyproject.toml").exists() or (repo / "requirements.txt").exists():
+            return "pytest"
+    return "false"
 
 
 # ---------------------------------------------------------------- 缺陷集
@@ -387,6 +444,8 @@ def derive_carriers(repo: Path, entries: list[str]) -> tuple[str, str, str, str,
 def cmd_init(argv: list[str]) -> int:
     repo_arg = None
     scope = ""
+    project_type = "auto"
+    execution_mode = "full"
     perimeter_arg: str | None = None
     upstream_path = str(UPSTREAM)
     final_gate = "false"  # shlex 直执形态的 fail-closed 桩（未配置的门不许静默放行）
@@ -397,6 +456,10 @@ def cmd_init(argv: list[str]) -> int:
         a = argv[i]
         if a == "--scope":
             scope = argv[i + 1]; i += 2
+        elif a == "--project-type":
+            project_type = argv[i + 1]; i += 2
+        elif a == "--mode":
+            execution_mode = argv[i + 1]; i += 2
         elif a == "--perimeter":
             perimeter_arg = argv[i + 1]; i += 2
         elif a == "--upstream":
@@ -414,8 +477,14 @@ def cmd_init(argv: list[str]) -> int:
         else:
             die(f"多余位置参数: {a}")
     if not repo_arg:
-        die("用法: factory-init.py init <repo-path> [--scope S] [--perimeter p1,p2] "
-            "[--upstream PATH] [--final-gate-cmd CMD] [--no-register] [--no-labels]")
+        die("用法: factory-init.py init <repo-path> [--scope S] "
+            "[--project-type auto|frontend|backend|fullstack] [--mode full|local] "
+            "[--perimeter p1,p2] [--upstream PATH] [--final-gate-cmd CMD] "
+            "[--no-register] [--no-labels]")
+    if project_type not in {"auto", "frontend", "backend", "fullstack"}:
+        die(f"--project-type 只能是 auto|frontend|backend|fullstack，收到: {project_type}")
+    if execution_mode not in {"full", "local"}:
+        die(f"--mode 只能是 full|local，收到: {execution_mode}")
 
     repo = Path(repo_arg).expanduser().resolve()
     if not repo.exists():
@@ -424,6 +493,12 @@ def cmd_init(argv: list[str]) -> int:
         die(f"不是 git 仓库: {repo}")                        # F2
 
     name = repo.name
+    if project_type == "auto":
+        project_type = detect_project_type(repo)
+    if execution_mode == "local" and final_gate == "false":
+        final_gate = recommended_gate(repo, project_type)
+    print(f"factory-init: 项目类型={project_type}，初始化模式={execution_mode}，"
+          f"验证门={final_gate}")
     mission = repo / "MISSION.md"
     factory = repo / ".factory"
 
@@ -437,6 +512,15 @@ def cmd_init(argv: list[str]) -> int:
     if has_factory and not has_marker:
         die(f"{factory} 已存在且异源（MISSION 无生成标记）——拒绝覆盖，"
             "如确认可先人工移除 .factory/")                    # F3
+    if has_factory and (factory / "factory-local.json").exists():
+        try:
+            installed = json.loads((factory / "factory-local.json").read_text(encoding="utf-8"))
+            installed_mode = installed.get("execution_mode", "full")
+            if installed_mode != execution_mode:
+                die(f"现有工厂已是 {installed_mode} 模式，不能原地切换为 {execution_mode}；"
+                    "为避免残留无用文件，请在确认后移除 .factory/ 与 MISSION.md 再初始化")
+        except json.JSONDecodeError as exc:
+            die(f"factory-local.json 不可解析，拒绝覆盖: {exc}")
 
     upstream = Path(upstream_path).expanduser()
     upstream_repo = upstream_slug(upstream)
@@ -444,10 +528,13 @@ def cmd_init(argv: list[str]) -> int:
 
     # --- 第一段：拷贝 + 骨架 ---
     if not has_factory:
-        copied = copy_full_face(repo)
-        print(f"① 已拷贝上游 full 面 {len(copied)} 项 → .factory/")
+        manifest = list(load_full_manifest()) if execution_mode == "full" else list(LOCAL_FULL)
+        copied = copy_full_face(repo, manifest)
+        label = "full 面" if execution_mode == "full" else "本地最小面"
+        print(f"① 已拷贝上游 {label} {len(copied)} 项 → .factory/")
     else:
-        verify_factory_provenance(repo)                       # F20：执行前验源
+        manifest = list(load_full_manifest()) if execution_mode == "full" else list(LOCAL_FULL)
+        verify_factory_provenance(repo, manifest)              # F20：执行前验源
     if perimeter_arg is None:
         if mission_text and has_marker and SKELETON_ENTRY not in mission_text:
             print("MISSION 周界已填实——重跑请带 --perimeter 以重证（或直接编辑"
@@ -458,10 +545,14 @@ def cmd_init(argv: list[str]) -> int:
             # 人工已编辑 MISSION（无参重跑）：以 MISSION 为真相源直接进第二段
             return finish_init(repo, name, scope, validate_entries(repo, list(entries), False),
                                upstream_path, upstream_repo, port_point, final_gate,
+                               project_type, execution_mode,
                                do_register, do_labels)
         mission.write_text(render_mission(name, scope, []), encoding="utf-8")
         local = gen_factory_local(name, [SKELETON_ENTRY], upstream_path, upstream_repo,
-                                  final_gate, [SKELETON_ENTRY], port_point)
+                                  final_gate, [SKELETON_ENTRY], port_point,
+                                  project_type, execution_mode,
+                                  "scripts/factory-local-run.py" if
+                                  (repo / "scripts/factory-local-run.py").exists() else None)
         (factory / "factory-local.json").write_text(local, encoding="utf-8")
         print(f"② 已生成 MISSION.md / factory-local.json 骨架（占位周界）\n"
               f"→ 人工填写周界后重跑: factory-init.py init {repo} "
@@ -473,17 +564,22 @@ def cmd_init(argv: list[str]) -> int:
     validate_entries(repo, entries, auto_ensure=True, mission_written=True)
     mission.write_text(render_mission(name, scope, entries), encoding="utf-8")
     return finish_init(repo, name, scope, entries, upstream_path, upstream_repo,
-                       port_point, final_gate, do_register, do_labels)
+                       port_point, final_gate, project_type, execution_mode,
+                       do_register, do_labels)
 
 
 def finish_init(repo: Path, name: str, scope: str, entries: list[str],
                 upstream_path: str, upstream_repo: str, port_point: str | None,
-                final_gate: str, do_register: bool, do_labels: bool) -> int:
+                final_gate: str, project_type: str, execution_mode: str,
+                do_register: bool, do_labels: bool) -> int:
     g2, g2_line, b01, b01_line, g06 = derive_carriers(repo, entries)
     reading = sorted({e for e in entries if e.endswith("/")} | {"README.md"})
     (repo / ".factory" / "factory-local.json").write_text(
         gen_factory_local(name, entries, upstream_path, upstream_repo, final_gate,
-                          reading, port_point), encoding="utf-8")
+                          reading, port_point, project_type, execution_mode,
+                          "scripts/factory-local-run.py" if
+                          (repo / "scripts/factory-local-run.py").exists() else None),
+        encoding="utf-8")
     print(f"② 周界落定 {len(entries)} 条（G-02→{g2} B-01→{b01}"
           f" M锚点→{next(e for e in entries if e.endswith('/'))}"
           f"{' G-06→' + g06[0] if g06 else ''}）")
@@ -508,6 +604,11 @@ def finish_init(repo: Path, name: str, scope: str, entries: list[str],
         die(f"mutations 重证失败（rc={mut.returncode}）"
             "——未证明的门不是门，不宣告完成")                  # F18
     print("④ mutations kill rate 100%（结构缺陷集全量拦截 + 负例放行）")
+
+    # 运行 guard/mutations 可能产生解释器缓存；初始化产物不应携带运行时垃圾。
+    for cache in ((repo / ".factory") / "__pycache__", (repo / ".factory" / "mutations") / "__pycache__"):
+        if cache.exists():
+            shutil.rmtree(cache)
 
     # --- 注册（幂等） ---
     if do_register:

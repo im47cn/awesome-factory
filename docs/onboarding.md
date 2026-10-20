@@ -87,6 +87,11 @@ python3 ~/sources/awesome-factory/tools/factory-init.py init /path/to/new-repo \
 # 人工填写周界（MISSION.md 是唯一真相源），然后第二段：
 python3 ~/sources/awesome-factory/tools/factory-init.py init /path/to/new-repo \
     --perimeter 'docs/,src/,MISSION.md,.gitignore'
+
+# 本地 AI 编码仓推荐：自动识别前端/后端/全栈，只安装本地链路需要的最小面
+python3 ~/sources/awesome-factory/tools/factory-init.py init /path/to/new-repo \
+    --mode local --project-type auto \
+    --perimeter 'docs/,src/,.gitignore' --no-register --no-labels
 # 第二段自动完成：配置落定 → 结构缺陷集生成 → guard self_check →
 # mutations kill-rate 全量重证（强制，无 skip）→ 注册 repos.conf →
 # gh 标签预建。不 commit——落库内容（周界划界）正是人要审的。
@@ -94,6 +99,13 @@ python3 ~/sources/awesome-factory/tools/factory-init.py init /path/to/new-repo \
 # 机况体检（新电脑 / 排障）：非交互，✓/✗/⚠ + 修复指针
 python3 ~/sources/awesome-factory/tools/factory-init.py doctor
 ```
+
+`--mode local` 只安装 `guard.py`、`factory_lib.py` 和 `mutations/run.py`，
+并在现有 `factory-local.json` 中记录 `project_type`、`execution_mode`、
+推荐的 `final_gate_cmd` 和本地 runner。项目类型可选 `frontend`、`backend`、
+`fullstack`，默认 `auto` 按仓库文件判断。前端仓不会生成远程调度、托管平台、
+验收和下游巡检脚本；后端也不会因为只是本地编码流程而生成这些远程副作用面。
+需要云效/GitHub 调度时再使用默认的 `--mode full`。
 
 手工四步（CLI 的等价展开，权威细节见
 [.factory/README.md §移植到其他仓库](../.factory/README.md)）：

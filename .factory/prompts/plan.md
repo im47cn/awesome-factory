@@ -36,3 +36,9 @@ implement 节点可以不做任何设计决策地照做。
 ```
 
 stdout 最后一行输出：`ARTIFACT: $ISSUE_DIR/plan.json`
+
+## 冻结验收契约（启用时）
+
+`$ISSUE_DIR/acceptance-contract.json` 是人工批准的目标、非目标和验收命令。
+只读此契约，不得改契约、批准信息或验收收据；逐条 ID 映射实现和验证。
+契约与实际需求冲突时停止并请求重新审批，不得自行扩大范围。

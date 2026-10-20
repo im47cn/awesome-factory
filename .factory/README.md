@@ -46,7 +46,10 @@
   全链状态机可跑；可用面 = MR 读写/评论/合并/类标 Link + 标记评论 +
   issue 全套（需 `CODEUP_SPACE_ID`/`WORKITEM_TYPE_ID`/`ASSIGN_USER_ID`））
 - `SUPABASE_DB` 仲裁层 PG 连接串（Supabase pooler 或自建 Postgres；未设 = 单写者模式本地锁降级，见「租约仲裁」）
+## 验收契约与事故回归
 
+新增可选契约门：批准版本先冻结，最终提交逐项独立复跑，Holdout 与交付前校验绑定。
+接入、收据及事故红绿端用法见 [acceptance-README](acceptance-README.md)。
 ## 快速开始
 
 ```bash
