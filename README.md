@@ -9,6 +9,7 @@
 - 运维手册：[.factory/README.md](.factory/README.md)
 - 治理宪法：[MISSION.md](MISSION.md)
 - 设计文档与决策：[docs/design/](docs/design/)、[docs/adr/](docs/adr/)
+- AI 研发工厂建设规划：[docs/ai-rd-factory-construction-plan.md](docs/ai-rd-factory-construction-plan.md)
 - 下游消费：各仓 `bash .factory/sync-from-upstream.sh ~/sources/awesome-factory`
   （factory-local.json 的 `upstream_repo` / `upstream_path` 指向本仓）
 
