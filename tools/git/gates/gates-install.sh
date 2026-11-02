@@ -203,6 +203,13 @@ done < <(list_face local)
 # coderabbit job 同款既定语义), 正常推送/读取异常 exit 1 门禁照跑, 故 || 链在正常推送
 # 必然落 mutation-gate; 不用 {push_files}: 新分支首推无 @{push} 引用时 lefthook 展开
 # 即失败绑架首推, 且 mutation-gate.sh 自算 diff 基线无需文件清单实参
+# ⚠️ 组装者警示（gtsp-wop-portal 2026-11-01 实证）: 本注入块门禁逻辑自洽——
+# mutation-gate.sh 自算 diff 基线、不消费推送引用 stdin；但 piped:true 消费仓链中
+# use_stdin 只有链首命令真正收到 Git push stdin：若本 job 非链首，其守卫读空输入
+# fail-open，纯删除短路失效、门禁在纯删除时空跑（逻辑仍正确，只是白跑或可能失败）。
+# 消费仓自行组装依赖推送引用 stdin 的门（如 coverage-full）更会拿空输入——勿照搬
+# 「守卫||门禁」结构，应改非 piped + 逐命令守卫 + 该门「读一次 stdin 分别喂守卫与
+# 门禁」的包装（先例: portal chore/gates-align-docs 分支）。
 JOB_BLOCK='    mutation-gate:
       use_stdin: true
       # 删除防护极性契约: guard 0=纯删除推送→短路跳过门禁(awesome-rules 既定语义);
