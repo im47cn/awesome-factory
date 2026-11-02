@@ -1123,6 +1123,28 @@ class TestLabelAddCrossProcessLock:
             assert os.path.isdir(lock_dir)
         assert not os.path.isdir(lock_dir)
 
+    def test_pid_write_failure_refuses_lock(self, monkeypatch, tmp_path):
+        """pid 写失败 → 释放锁目录 + HostingError fail-closed 拒持锁：
+        无 pid 裸持锁越过年龄宽限即被他进程判死接管 = 双写，且先者的
+        finally 清理会误删后继活锁（awesome-rules@80ce34ad 血统既有
+        保护移植；wop-skills#25 审查以 suppress 形态实证接管窗口）。"""
+        monkeypatch.setenv("FACTORY_LOCK_DIR", str(tmp_path))
+        ad = hosting.CodeupAdapter()
+        lock_dir = hosting._label_lock_dir(".", 7, "factory:needs-review")
+        real_open = open
+
+        def flaky_open(path, *a, **k):
+            if str(path).endswith("/pid"):
+                raise OSError("模拟写盘失败")
+            return real_open(path, *a, **k)
+
+        monkeypatch.setattr("builtins.open", flaky_open)
+        with pytest.raises(hosting.HostingError) as e:
+            with ad._add_label_lock(7, "factory:needs-review"):
+                pass
+        assert e.value.code == 1
+        assert not os.path.isdir(lock_dir)  # 拒持锁前已释放，不留无 pid 残锁
+
     def test_parallel_add_posts_exactly_once(self, monkeypatch, tmp_path):
         """并发回归（核心契约）：两独立适配器实例（双进程/双链形态）
         同仓同 PR 同名 add 并发——锁串行化 + 后到者锁内重预检幂等跳过，
