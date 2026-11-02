@@ -1444,6 +1444,9 @@ def main(argv: list[str]) -> int:
         # 不可读/内容畸形 = 死（SIGKILL 残锁过期同判）。退出码 0=活 1=死
         # 2=参数错。PG 形态（SUPABASE_DB）租约在库中，调用方不得用本
         # 命令的输出断言死活（保守 unknown）。
+        if len(argv) < 3:
+            print("lease-fresh: 缺锁文件路径参数", file=sys.stderr)
+            return 2
         lock = Path(argv[2])
         try:
             line = lock.read_text(encoding="utf-8").strip().splitlines()[0]

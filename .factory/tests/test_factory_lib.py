@@ -621,3 +621,13 @@ class TestSuitesNulOutput:
         assert raw.endswith("\0")
         assert raw[:-1].split("\0") == [
             "skills/api-guard/scripts", "skills/doc review/scripts"]
+
+
+class TestLeaseFreshArgv:
+    """lease-fresh 缺锁路径参数 → exit 2（文档承诺 0=活 1=死 2=参数错）：
+    裸 IndexError 走 exit 1 会被调用方当「锁死」接管活锁（awesome-
+    rules@80ce34ad 血统既有检查移植；wop-skills#25 审查实证）。"""
+
+    def test_missing_lock_path_returns_2(self, capsys):
+        assert main(["factory_lib.py", "lease-fresh"]) == 2
+        assert "缺锁文件路径参数" in capsys.readouterr().err
