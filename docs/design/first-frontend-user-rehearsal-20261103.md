@@ -5,11 +5,12 @@
 按首用户指南，从全新目录创建 Vue 3 + TypeScript + Vite 工程，安装工程规范与 Hook，接入本地 Factory，以计数器页面演练需求分析、Spec、AI 编码和本地浏览器验收。演练启动时 Factory/Rules 不提交、不推送；后续用户另行授权公共仓提交推送，发布情况与历史执行来源分别记录。隔离业务仓仅建立本地工程与治理基线，不配置远端。
 
 - 隔离目录：`/private/tmp/factory-first-user-20261103-iTbmCR`。
-- 公共仓来源 HEAD：Factory `557c50494bac2231d62eedfa508a919d43ac0626`，Rules `22c6b94b020b3d5fef4f13f0b58e32382568d32c`，叠加本次未提交补丁。
+- 冻结采集时的公共仓来源 HEAD：Factory `557c50494bac2231d62eedfa508a919d43ac0626`，Rules `22c6b94b020b3d5fef4f13f0b58e32382568d32c`，叠加当时的工作树补丁；后续观测的发布提交见第 7 节。
 - 实际执行以文件摘要锁定；HEAD 仅记录来源，不能将工作树补丁称为已发布版本。
 - 环境：Python 3.11.9、Node 24.22.1、项目 pnpm 10.28.1、OMP 18.10.3；真实模型为 `openai-codex/gpt-5.6-sol`。
-- 任务链：`first-page-pilot` / `local-20261103-613a17e2` → `first-page-pilot-final` / `local-20261103-56853139` → `first-page-pilot-closure` / `local-20261103-ddf56748` → `first-page-pilot-complete` / `local-20261103-4a06fbd9` → `first-page-pilot-verified` / `local-20261103-4ec147c4`。工程与反馈能力升级后分别创建关联修订；父子关系和完整历史保留，未继承通过状态。最终结果以 verified 任务为准。
-- 最终工程基线 `c6ee9f4d8e789d9c0ab24c1163bef9373e58e0f5`；执行版本为 `reviewed-history/` 冻结快照，运行时锁 SHA-256 `a9eaffd00dde40cc0febaf481702b4abd8db07eb9427b10dc214b5b85fa17ef3`。本地工程提交结束、退出 0 后才启动任务。
+- 前序任务链：`first-page-pilot` / `local-20261103-613a17e2` → `first-page-pilot-final` / `local-20261103-56853139` → `first-page-pilot-closure` / `local-20261103-ddf56748` → `first-page-pilot-complete` / `local-20261103-4a06fbd9` → `first-page-pilot-verified` / `local-20261103-4ec147c4`。工程与反馈能力升级后分别创建关联修订；父子关系和完整历史保留，未继承通过状态。
+- 前序工程基线 `c6ee9f4d8e789d9c0ab24c1163bef9373e58e0f5`、`reviewed-history/` 版本的闭环结果见 5.3。来源隔离防护补齐后，另在 `first-factory-app-final-guarded/` 独立复跑，以新任务 `first-page-final-guarded` / `local-20261103-71990ae1` 为最终结果，未继承前序阶段通过状态。
+- 最终独立工程基线 `bb2f8142ca7a034aea9b21b7613b5bd11fe4e17a`；执行版本 `reviewed-final/`，运行时锁 SHA-256 `91751f04290886794a37ced936439bc0bc5fa6766f89da3108b46fc4e19229ee`。最终复跑复用前序审阅过的工程基线、重新冻结锁安装依赖、重新由模型生成业务代码；不是第二次从零 AI 生成工程基础设施。本地提交退出 0 后才启动任务。
 
 这是无 Figma、无后端、无接口、无登录依赖的最小前端闭环。测试环境部署、远端 CI、推送、MR 和 Figma 视觉验收不在本次演练范围。
 
@@ -71,6 +72,9 @@
 | final-review-verify-await-browser / 2 | complete 的 AI 实现成功后，review 仍用 live App.vue 验证编码前 OBS-008 引用 | 原实现与 diff 归档，只恢复该任务唯一改动 App.vue；把源码观察冻结前移至需求阶段，新关联任务从当前基线重跑，不改写历史产物 |
 | requirement-history-independent-green / 1 | 4 项测试执行中仍有 runner 修改，完整性门在 1 项中拦截 | 冻结 reviewed-history 后 4/4 重新通过，另由独立复审再跑 4/4；原失败保留 |
 | final-review-verify-await-browser / 2 | 编码成功后，旧源码 observation OBS-008 的原文不再存在于 live App.vue；恢复仍按现行源码校验历史 | 保留实际红端和生成代码；不改需求或通过状态，补独立分析快照，归档代码后建立关联修订重跑 |
+| freeze-reviewed-history / 1 | 重复冻结已存在的目录，Git 拒绝覆盖；同时原演练目录还有另一恢复进程持锁 | 保留现场，最终使用 reviewed-final 与独立业务目录/端口，避免并发覆盖 |
+| pin-final-guarded / 2 | 记录器默认 cwd 为新的控制目录，传入了按父目录编写的相对路径 | 明确指定 cwd 后重新生成版本锁，未继续使用失败结果 |
+| guarded-acceptance-closure / 2 | 操作者把适配器单测与验收恢复并行；单测生成新的 test_adapter.pyc，源码完整性门正确拒绝 | 只删除该检查生成且不在基线内的缓存，核对源码摘要恢复为实施收据值；随后串行恢复成功，未改业务或历史收据 |
 
 运行时更新仅在人工审阅差异后刷新 runtime-lock 和 installation 摘要，另建隔离仓本地治理基线。没有编辑旧阶段产物来绕过失败。
 
@@ -108,6 +112,10 @@
 
 本次明确登记的来源保护 P2：自定义 perimeter 尚未严格拒绝绝对路径、`.`、`..`；敏感文件名列表不穷尽嵌套 AWS/Docker 配置和 `credentials.json` 等名称；retained 主要比较字节，同字节的普通文件替换成 symlink 不会在当前模型阶段立即识别，后续历史路径校验会拒绝。当前演练采用规范化相对周界、无凭据业务工程；不将其外推为任意仓库的保密保证。
 
+归档脚本是本次本地演练的辅助工具：采用停止写入后复制并校验，不保证复制原子性，不是面向任意生产仓的敏感文件过滤/备份服务。当前选定范围未发现非依赖符号链接或常见凭据文件；其他仓库不得未经范围审查直接套用。
+
+开发服务日志还观察到：Vite 监听到 `artifacts/.../source/index.html`、`tsconfig.json` 快照写入时会触发 reload。本次浏览器逐项断言实际通过；后续应在评审和快照写入结束后再独立执行浏览器验收，不能据此宣称任意并行时序都稳定。本次未修改业务仓 Vite watch 配置。
+
 ### 5.3 最终本地闭环
 
 任务 `local-20261103-4ec147c4` 从 2026-11-03 08:03:24 UTC 开始，最终于 08:15:59 UTC（北京时间 16:15:59）完成，`status=completed`、`rc=0`、`recovery_command=null`。6/6 AC、5/5 必验检查通过，`browser_status=passed`、`integration_status=not_required`。这是本地闭环，不是测试环境、Figma 或远端流水线验收。
@@ -127,16 +135,36 @@
 
 ### 5.4 提交前增量与验证版本差异
 
-完整业务演练使用 `reviewed-history` 冻结字节。最终待提交运行器另外补充了来源隔离防护：禁止把未纳入基线、治理或凭据路径作为业务源码来源；快照保存分析整树并核对原始文件摘要；拒绝归档符号链接；保护归档 manifest/body；受限需求产物隔离后不作为正式证据继续归档。该增量由单独 9 项定向回归和只读复审覆盖，不能把冻结版完整演练结果解释为增量字节也已重跑完整模型链路。
+前序完整业务演练使用 `reviewed-history` 冻结字节。运行器随后补充来源隔离防护：禁止把未纳入基线、治理或凭据路径作为业务源码来源；快照保存分析整树并核对原始文件摘要；拒绝归档符号链接；保护归档 manifest/body；受限需求产物隔离后不作为正式证据继续归档。当时该增量只有 9 项定向回归和只读复审，不能用前序结果背书；后续独立完整复跑见 5.5。
 
 隔离只约束被拒的需求正文、契约及来源快照，不是对所有日志、模型 stdout/stderr 或会话的通用脱敏保证。不要输入真实密钥；不能用此防护宣称模型会话不会接触或输出凭据。
+
+### 5.5 含来源隔离防护的最终完整复跑
+
+独立目录 `first-factory-app-final-guarded`、控制与日志目录 `final-guarded-control`、端口 6191。真实模型重新分析、澄清、生成 Spec 和业务实现；需求摘要仍为 `050b98a29ce245fea984ccfd4107f7334773d5f230465c173c278a979b1654c4`。任务 `local-20261103-71990ae1` 于 08:17:08 UTC 启动，08:31:04 UTC（北京时间 16:31:04）最终完成，`status=completed`、`rc=0`、`recovery_command=null`，6/6 AC、7/7 必验检查通过，`browser_status=passed`、`integration_status=not_required`。
+
+| 节点 | 结果与耗时 | 证据 |
+|---|---|---|
+| 冻结锁安装、本地基线 | 安装 12.622 秒；正常 Hook 提交 28.348 秒；无业务远端 | final-guarded-control/evidence 节点收据；基线 bb2f814 |
+| classify → requirement → clarification → spec → spec-review | 346.309 秒，退出 0；6 个行为候选、6 条 AC、7 个验证项，无未决澄清 | attempt `20261103T081709-c77c64bec4f6`；分析源码快照包含 App.vue/styles.css 与可重算的 52 项原基线 |
+| preflight → implement | 54.777 秒，退出 0；唯一实际改动为 src/App.vue | attempt `20261103T082354-07e513f74332`；环境与范围收据 |
+| 独立 review → 首次 verify | 143.978 秒，退出 3；评审与命令通过，人工证据仍 NOT_RUN | attempt `20261103T082517-3dc662e41a85`；pending_acceptance |
+| 真实 Chrome | 31.464 秒，退出 0；1280×900 和 375×900 全部交互与尺寸断言通过 | final-guarded-control/browser-evidence/interaction.json、6 张截图；两张初始截图已实际核看 |
+| 完整性与收据 | 对照原基线，仅 App.vue 改变；50 项范围外文件内容/路径/模式/索引不变；两个命令真实退出 0 | scope-integrity.json；5 个 manual 项按 browser/integrity 类型逐项绑定证据 |
+| 恢复最终 verify | 清除操作者检查产生的额外缓存并恢复原源码摘要后，61.825 秒、退出 0 | 最终 attempt `20261103T083002-2648ab750bb2`；归档收据及 verification-result |
+| 工程项目模式、薄适配 | 业务页面演进后 project check 退出 0；项目 adapter 1/1 | guarded-project-check / guarded-project-adapter-test |
+
+最终源码摘要 `804f66d7ffc46b52fa3da9aeecd640c57e3708ffdada2729664cd37490bcec20`，Spec 摘要 `2996296a5331bf04573965553defa8fab3659d396a93931b8beb52349cff9429`，契约摘要 `9328d0a92fcc014928387fcaf44c8bb45c290fb9bdd960d1b3dcfed15d3150b6`。浏览器检查覆盖初始/刷新、加一/重置、存储/网络、两宽度；完整性检查单独使用 Python 源码/索引对照证据。命令和浏览器不能互相替代。
+
+最终质量与覆盖率均实际重跑，health 文件行覆盖率 1/1（100%），其普通文件 80% 门槛通过；SFC 计数器行为仍由真实浏览器证明，不将 health 覆盖率当作组件覆盖率。基线内已有的桥接字节码没有作为业务提交；仅清除了本轮额外产生的适配器测试字节码，保留完整恢复记录。
 
 ## 6. 回归与交付边界
 
 - Bootstrap：24/24 单测通过，覆盖新仓、项目检查模式、治理漂移和升级迁移。
 - Factory 定向回归：74/74（setup 10 项 + docs、否定远端与技能路由相关用例）；分类另覆盖 25 组正反场景。
-- reviewed-local 冻结版：119/119 标准库回归（570.429 秒），项目薄适配 1/1；reviewed-history 冻结版：123/123 标准库回归（926.142 秒），项目薄适配 1/1。完整业务闭环采用后者；提交前来源隔离增量单列，不混称同一版全量回归。
+- reviewed-local 冻结版：119/119 标准库回归（570.429 秒），项目薄适配 1/1；reviewed-history 冻结版：123/123（926.142 秒），薄适配 1/1。最终 reviewed-final 冻结版：128/128（849.733 秒），最终业务仓薄适配 1/1；5.5 的真实模型闭环使用这份最终冻结字节，包含来源隔离防护。
 - Rules Bootstrap 真实 ESLint 产物/业务源码正反例 1/1 通过；plugin-lock、文档新鲜度、273 个文档链接和 diff-check 通过。
+- 指南排除规则命令在额外空 Git 目录执行：旧多路径命令可假绿（rc=0），新逐项循环先正常拦截（rc=1）；运行指南原文修复块后逐项均 rc=0，重复执行不重复追加、不删除团队既有规则，未修改业务复跑目录。
 - 隔离工程仅本地基线提交，无 remote、无 push；公共仓后续提交推送使用独立授权，不回写演练时来源 HEAD。
 - 不用模型工具存在、静态检查或截图文件存在替代真实交互/环境验收。
 
@@ -144,6 +172,10 @@
 
 ## 7. 发布记录与证据保管
 
-用户后续明确授权“提交推送改动”。Rules 首批修复提交 `749d276d32a8659007d7932f8e33a6c593457692`，另补来源隔离配套协议 `a52770e`，均推送至 `feature/figma-visual-guard-final`；Factory 在本轮验证与报告核对完成后提交至 `feature/local-init-acceptance`，实际提交身份由 Git 历史记录，不伪造自包含 commit SHA。
+沿用已有发布记录中另行取得的“提交推送改动”授权，不将其作为本次独立复跑的追加提交授权。独立复跑期间的只读 Git 核对曾确认：Factory 分支 `feature/local-init-acceptance` 本地与远端均为 `8c89dec4f0709e978c87edb096a0f27080359ac3`；Rules 分支 `feature/figma-visual-guard-final` 均为 `a52770e4d8d4f413a0aa694dacbb19da8b8b9b92`（前序另含 `749d276d32a8659007d7932f8e33a6c593457692`）。最终版本锁中的 52 个运行时、测试输入和工作流 Skill 文件，与当时观测到的公共仓文件逐项摘要一致。该比较不是按新提交重新 clone 的证明；5.5 按已冻结字节执行。追加的最终复跑记录及操作说明在复跑阶段保持未提交；2026-11-03 用户随后明确授权提交推送，具体发布身份以 Git 历史及远端分支回读为准，不在提交正文中写入自包含提交 SHA。
 
 逐节点原始日志、截图、任务收据和冻结快照保留在本机 `.factory/artifacts/onboarding-rehearsal/20261103-iTbmCR/`，该路径明确受 Git ignore 保护，不随公共仓推送。归档含可核验文件摘要，原绝对路径仅用于来源追溯；它不是携带 Git 历史、依赖和认证的可直接恢复发行包。团队可以取得共享报告与永久回归测试；完整原始证据需要另外按权限交接，不能声称 clone 公共仓就能获得本机日志。
+
+最终独立复跑另归档至 `.factory/artifacts/onboarding-rehearsal/20261103-iTbmCR-final/`，包含前序证据、最终新目录、冻结版本、独立控制脚本、浏览器与完整性证明，以及合并的节点清单和 SHA-256 manifest。最终状态以该归档的 summary.json 和 `first-factory-app-final-guarded/artifacts/factory-local/first-page-final-guarded/result.json` 为准；归档同样受 ignore 保护。
+
+`archive-verification.json` 保存独立归档检查收据，机械交叉核对 task/attempt/rc、6 条 AC、7 个必验项、request/source/Spec/contract 摘要、原基线和实施后快照、50 项受保护文件、双重独立审查、各阶段归档输出摘要、命令/浏览器收据、质量日志和全文件 manifest，并验证归档确实受 Git ignore 保护。归档内不含 Git 历史、依赖树或字节码；相应限制不影响保存的源码快照元数据，但它不构成可直接恢复工作树的发行包。

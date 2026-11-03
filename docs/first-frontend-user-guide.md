@@ -658,6 +658,34 @@ Factory 将上一份审查中的 gap/findings 作为只读技术反馈交回 Spe
 
 编码后恢复时，需求中的源码现状引用应对照需求分析阶段保存的内容快照及阶段收据验证；当前业务代码则对照编码后摘要和实际修改范围验证。分析快照独立于可重跑的实施阶段，正常实现会改变旧源码原文，不应因此把历史引用判成失效；历史快照缺失或被改写仍会阻断，不能手工重写需求引用来迁就新代码。
 
+Factory 执行期间，保持源码、暂存区、HEAD 和忽略规则稳定。在首次任务建立基线之前，完成 `setup.py check`，并按下面的命令补齐本机排除规则、逐项核验；不要在运行中改变忽略规则。已有任务需先核对现场和恢复方式。
+
+```bash
+# 业务仓根目录执行；仅追加本机 Git exclude 的缺项，保留其他规则。
+python3 -B - <<'PY'
+from pathlib import Path
+import subprocess
+path = Path(subprocess.check_output(
+    ['git', 'rev-parse', '--git-path', 'info/exclude'], text=True).strip())
+path.parent.mkdir(parents=True, exist_ok=True)
+content = path.read_text() if path.exists() else ''
+patterns = ['/artifacts/factory-local/', '/.factory/**/__pycache__/',
+            '/.factory/__pycache__/', '/.factory/*.pyc']
+missing = [item for item in patterns if item not in content.splitlines()]
+if missing:
+    path.write_text(content + '\n' + '\n'.join(missing) + '\n')
+PY
+
+for factory_probe in \
+  '.factory/__pycache__/probe.pyc' \
+  '.factory/tests/__pycache__/probe.pyc' \
+  'artifacts/factory-local/probe.json'; do
+  git check-ignore -v -- "$factory_probe" || exit 1
+done
+```
+
+三项必须分别匹配；不能用一条多路径 `git check-ignore` 的退出 0 证明全部忽略，因为只要其中一项匹配，它就可能返回 0。独立 Python 检查使用 `python3 -B` 避免生成字节码。会写缓存、构建文件或修复格式的检查不能仅因“属于测试”就与验收恢复并行；发现额外产物时先核对归属、恢复原摘要，再恢复任务，不改写已通过的收据。
+
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `检测到现有 .factory 或 MISSION.md；拒绝覆盖` | 仓库已接入或有治理文件 | 不重复 init，运行 `.factory/setup.py check .` |
