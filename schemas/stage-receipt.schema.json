@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "factory-stage-receipt/1",
+  "type": "object",
+  "required": ["schema", "task_id", "stage", "status", "started_at", "finished_at", "exit_code", "input_files", "output_files", "evidence"],
+  "properties": {
+    "schema": {"const": "factory-stage-receipt/1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "stage": {"type": "string", "enum": ["classify", "skill-discovery", "design-analysis", "requirement", "spec", "implement", "verify"]},
+    "status": {"type": "string", "enum": ["passed", "failed", "blocked"]},
+    "started_at": {"type": "string", "minLength": 1},
+    "finished_at": {"type": "string", "minLength": 1},
+    "exit_code": {"type": "integer", "minimum": 0},
+    "input_files": {"type": "array", "items": {"type": "string"}},
+    "output_files": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "failure_category": {"type": "string"},
+    "failure_message": {"type": "string"},
+    "recovery_command": {"type": "string"}
+  },
+  "additionalProperties": true
+}

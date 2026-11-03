@@ -9,6 +9,32 @@
 > 维护纪律：本文只写「步骤序列 + 出处指针」，不复述权威文档细节——
 > 权威变更时只需改源头，本文无需追改（防双真相源漂移）。
 
+## 前端项目：先在本地跑通（推荐入口）
+
+适用于尚无 `.factory` 的 Vue/TypeScript 项目；先检查现有工作树和包管理器，不切分支、不提交或推送，也不安装远程派发器。当前一站式入口支持前端仓，后端仍使用下文的 factory-init profile。
+
+```bash
+# 新仓库第一次接入（在任意目录执行，路径可包含空格）
+python3 /path/to/awesome-factory/tools/factory-local-setup.py init /path/to/frontend-repo
+
+# 团队 clone 已接入仓后：项目根执行，不重复 init
+python3 .factory/setup.py check .
+
+# 先生成需求和 Spec；task 是目录名，task_id 自动生成
+python3 .factory/run.py --task first-pilot --request-file /path/to/request.md --only-stage spec
+
+# 用户明确授权实施后，扩大上限并从下一阶段继续
+python3 .factory/run.py --task first-pilot --request-file /path/to/request.md --resume --authorize-through verify
+```
+
+接入入口复用现有治理初始化，而非重新实现 guard/mutation。自动按 package.json 选择已有质量命令，安装公共本地运行器模板和前端 Figma 采集适配器；配置中禁止自动提交和远端副作用。现有 `.factory`/MISSION 会被拒绝覆盖，升级须由维护者审核。
+
+每次接入/体检生成 `artifacts/factory-local/onboarding/<run-id>/nodes.jsonl`、逐节点原始日志和 `summary.json`。记录分支、基线、节点结果、命令退出码、安装文件摘要和上游快照；运行产物由 Git 本机 exclude 排除，团队成员执行 check 时自动配置。共享 `.factory` 文件和 MISSION 则应纳入版本控制。
+
+接入检查仅证明程序、治理门和工具存在，不会自动调用模型、登录 Figma 或访问测试环境。模型认证、实际编码、UI/API 和业务验收保持 NOT_RUN，待真实试点需求验证。质量基线有问题须单独记录，不作为接入成功或业务完成的证明。
+
+若提示缺少规则库：clone 到项目兄弟目录 awesome-rules，或设置 `AWESOME_RULES_ROOT`。若提示缺项目依赖：使用满足 package.json engines 的 Node/pnpm，执行 `pnpm install --frozen-lockfile`。若缺 OMP：安装并在交互终端登录；不要把凭证放入共享配置。
+
 ## 场景观别
 
 | 你要做什么 | 场景 | 走哪节 |
@@ -155,3 +181,5 @@ bash .factory/downstream-check.sh --apply-commit
 漂移闭环：下游热修 → `feedback-upstream.sh` 反哺 PR → 上游合并 → 下游
 `--apply` 追平 → `--check` 归零。详见
 [.factory/README.md §上游同步](../.factory/README.md)。
+
+公共本地十阶段工作流、三项 Skill 分层、项目薄适配与升级说明见 [shared-local-workflow](design/shared-local-workflow.md)。旧七阶段外部验收协议单独保留，不与原生流程快照混用。

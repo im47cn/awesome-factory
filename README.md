@@ -6,10 +6,13 @@
 文件的唯一上游真相源。
 
 - 接入指南（新电脑 / 新项目）：[docs/onboarding.md](docs/onboarding.md)
+- 前端本地一站式接入：`python3 tools/factory-local-setup.py init /path/to/repo`；团队 clone 后运行 `python3 .factory/setup.py check .`
 - 运维手册：[.factory/README.md](.factory/README.md)
 - 治理宪法：[MISSION.md](MISSION.md)
 - 设计文档与决策：[docs/design/](docs/design/)、[docs/adr/](docs/adr/)
 - AI 研发工厂建设规划：[docs/ai-rd-factory-construction-plan.md](docs/ai-rd-factory-construction-plan.md)
+- 七阶段收据验收契约：[docs/design/unified-stage-acceptance-contract.md](docs/design/unified-stage-acceptance-contract.md)
+- 真实业务试点执行方案：[docs/design/real-business-pilot.md](docs/design/real-business-pilot.md)
 - 下游消费：各仓 `bash .factory/sync-from-upstream.sh ~/sources/awesome-factory`
   （factory-local.json 的 `upstream_repo` / `upstream_path` 指向本仓）
 
@@ -22,3 +25,5 @@ python3 -m pytest .factory/tests -o addopts= -q   # 工厂测试套件
 ```
 
 前置条件与完整手册见 [.factory/README.md](.factory/README.md)。
+
+公共本地十阶段工作流、三项 Skill 分层、项目薄适配与升级说明见 [shared-local-workflow](docs/design/shared-local-workflow.md)。旧七阶段外部验收协议单独保留，不与原生流程快照混用。
