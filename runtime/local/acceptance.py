@@ -118,20 +118,23 @@ def summarize(contract: dict, results: dict, *, quality_passed: bool, visual_sta
     rows = [{**results.get(item['id'], {}), **item,
              'status': results.get(item['id'], {}).get('status', 'NOT_RUN')} for item in plan]
     required = [item for item in rows if item['required']]
-    missing = [item['id'] for item in required if item['status'] != 'passed']
+    missing = [item['id'] for item in required if item['status'] not in {'passed', 'failed'}]
     failed = [item['id'] for item in required if item['status'] == 'failed']
     acs = []
     for ac in contract['acceptance']:
         refs = [item for item in required if item['id'] in ac['verification_ids']]
         passed = bool(refs) and all(item['status'] == 'passed' for item in refs)
-        acs.append({'id': ac['id'], 'status': 'passed' if passed else 'pending',
+        acs.append({'id': ac['id'], 'status': ('failed' if any(item['status'] == 'failed' for item in refs)
+                                           else 'passed' if passed else 'pending'),
                     'verification_ids': ac['verification_ids']})
-    browser = [item for item in required if item['kind'] == 'manual'
-               and item['environment'] in {'mock', 'test-environment'}]
-    browser_status = ('passed' if browser and all(item['status'] == 'passed' for item in browser)
+    browser = [item for item in required if item['kind'] == 'manual' and item.get('evidence_type') == 'browser'
+               and item['environment'] in {'local', 'mock', 'test-environment'}]
+    browser_status = ('failed' if any(item['status'] == 'failed' for item in browser)
+                      else 'passed' if browser and all(item['status'] == 'passed' for item in browser)
                       else 'pending') if needs_browser else 'not_required'
     real = [item for item in required if item['environment'] == 'test-environment']
-    integration = ('passed' if all(item['status'] == 'passed' for item in real) else 'not_run') if real else 'not_required'
+    integration = ('failed' if any(item['status'] == 'failed' for item in real)
+                   else 'passed' if all(item['status'] == 'passed' for item in real) else 'not_run') if real else 'not_required'
     if not quality_passed or failed:
         status = 'failed'
     elif visual_status in {'blocked', 'failed'}:

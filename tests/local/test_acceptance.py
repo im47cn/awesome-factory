@@ -82,9 +82,9 @@ class FactoryCase(unittest.TestCase):
                          'verification': [
                              {'id': 'V-C', 'kind': 'command', 'argv': command or self.argv,
                               'environment': 'local', 'required': True, 'status': 'NOT_RUN'},
-                             {'id': 'V-M', 'kind': 'manual', 'steps': ['Observe mock'],
+                             {'id': 'V-M', 'kind': 'manual', 'evidence_type': 'browser', 'steps': ['Observe mock'],
                               'environment': 'mock', 'required': True, 'status': 'NOT_RUN'},
-                             {'id': 'V-R', 'kind': 'manual', 'steps': ['Observe test environment'],
+                             {'id': 'V-R', 'kind': 'manual', 'evidence_type': 'browser', 'steps': ['Observe test environment'],
                               'environment': 'test-environment', 'required': True, 'status': 'NOT_RUN'}],
                          'acceptance': [{'id': 'AC-1', 'criterion': 'Observed result', 'requirement_ids': ['RQ-1'],
                                          'clarification_ids': ['CL-1'],

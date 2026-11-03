@@ -4,6 +4,8 @@
 
 适用版本：`factory-local/workflow/4`。空仓工程基线当前只支持 Vue 3 + TypeScript + Vite。React/其他前端仓只有在已经使用 pnpm，提供覆盖格式、Lint、类型、单测和构建的 `quality:check`（或 Factory 可识别的等价脚本），并提供面向当前工作树的正式 `coverage:gate` 时，才能从 Factory 接入步骤开始；否则先做项目专属适配，不能按本文宣称已接入。Factory 不会自动提交、推送或创建 MR；为了让空仓具有可比较的 Git 基线，本文包含两次由操作者审阅后执行的**本地提交**，默认不推送。
 
+本指南配套版本包含 `--context-file`、Bootstrap `check --check-mode project`、profile `1.0.2` 及恢复校验修复。旧参考基线 Factory `557c504`、Rules `22c6b94` 不包含这些能力，不能只 clone 旧提交再照抄新命令。使用维护者本次发布的两仓配套完整 SHA，clone 后固定版本并保存 `git rev-parse HEAD` 与运行时文件摘要；本次演练使用旧 HEAD 叠加冻结补丁的历史记录另见文末报告，不冒充已发布版本的重新演练。
+
 ## 1. 先理解边界：Factory 负责什么，不负责什么
 
 Factory 是编排和验收运行时，不是业务仓脚手架，也不是自动发布机器人。
@@ -18,6 +20,10 @@ Factory 是编排和验收运行时，不是业务仓脚手架，也不是自动
 | 交付 | 生成交接和远端意图记录，不自动产生远端副作用 | 人工审查 diff 后提交、推送、创建 MR |
 
 重要边界：`build`、单测、静态检查只能证明对应命令通过，不能单独证明浏览器交互、Figma 视觉还原、真实接口或生产环境可用。
+
+操作者在终端运行本文命令、准备账号与答复；外层 AI 在 Factory 接入前执行 bootstrap/覆盖率 Skill；Factory 接入后才调用 OMP 编排业务阶段。需要编辑文件或执行 Skill 时，应使用能访问这三个本地目录的编码 Agent。纯终端不会因为下载了 `SKILL.md` 就自行完成覆盖率接入。
+
+首任务前确定最小技术选型：是否需要 Vue Router、状态管理、UI 组件库、Mock 服务和浏览器测试工具。当前 profile 只有最小 Vue 壳和 Vitest，不包含这些业务依赖。需要扩展时先由操作者确认并安装，再建立工程基线；Factory 接入后 `package.json`、锁文件和治理脚本受周界保护，不让业务实现临时绕过。
 
 ## 2. 第一个用户应该走哪条路径
 
@@ -58,6 +64,29 @@ Factory 是编排和验收运行时，不是业务仓脚手架，也不是自动
 - 本地可读的 `awesome-factory` 和 `awesome-rules`
 - macOS/Linux；Windows 原生环境使用 WSL
 
+OMP 的安装入口以[上游安装说明](https://github.com/can1357/oh-my-pi#install)为准。本次本机可运行版本为 `omp/18.10.3`；新机可下载并审阅安装器后按固定版本安装：
+
+```bash
+curl -fsSL https://omp.sh/install -o /tmp/factory-omp-install.sh
+# 先审阅安装器，再安装已验证版本；已有 OMP 不重复安装
+sh /tmp/factory-omp-install.sh --binary --ref v18.10.3
+omp --version
+omp login openai-codex
+omp models openai-codex
+```
+
+登录会打开授权页面，按提示选择实际授权的账号。若使用其他 provider，按其登录方式配置，不能把 ChatGPT/Codex 登录当成任意 API Key。不要运行会导出凭证的命令来收集诊断信息。
+
+从本机模型清单中选择可用模型，再做一次真实、无文件工具的探测。下列型号是本次演练选择，不要求所有账号具备同一型号：
+
+```bash
+export FACTORY_LOCAL_MODEL=openai-codex/gpt-5.6-sol
+omp --print --no-session --no-tools --no-skills --no-rules --no-extensions \
+  --model "$FACTORY_LOCAL_MODEL" --thinking low -- '只输出 FACTORY_MODEL_OK'
+```
+
+成功条件是命令退出 0 且实际返回 `FACTORY_MODEL_OK`；列表中有型号、`omp --version` 通过都不证明认证可用。失败先按终端提示登录、处理权限或模型不可用，不启动业务任务。模型调用可能消耗账号额度；探测无需读写业务仓。
+
 Factory 不会自动下载依赖、不保存模型凭证、不在共享配置中写 token。若使用 Figma，需要同时满足：浏览器账号能打开目标文件；在 Figma 的头像菜单 → Settings → Security → Personal access tokens 创建 Token；仅在当前终端执行 `export FIGMA_TOKEN='<token>'`。Token 不得写入仓库、共享 `.env`、需求文件或日志，任务结束后可执行 `unset FIGMA_TOKEN`。缺少 Token 或文件权限时，设计分析/视觉验收会停在待处理状态，不得把浏览器页面能打开当成连接器已认证或设计稿通过。
 
 ### 3.2 准备三个并列仓库
@@ -85,7 +114,11 @@ cd first-factory-app
 git init
 ```
 
-如果试点分支已经合入稳定分支，使用维护者公布的稳定分支或固定 commit，不盲目沿用本文的试点分支名。两个公共仓升级后不能直接续跑旧任务，应先审核 diff、重新锁定并从要求的阶段重跑。
+clone 前用 `git ls-remote --heads <上方仓库地址> <分支名>` 验证两个托管端的读取权限；出现 `Permission denied` 或 `Repository not found` 时向仓库维护者申请权限、配置 SSH，不能把公司凭证转交给 AI。拿到维护者公布的配套 commit 后，分别 `git -C <公共仓> checkout --detach <对应完整SHA>`，回读 `git rev-parse HEAD`。分支名用于找到仓库，固定 commit 用于复现。
+
+尤其检查“已有仓能访问、新目录不能访问”的情况：原仓 `.git/config` 中的 `core.sshCommand` 不会被新 clone 继承。先在新终端/父目录验证读取；需要指定密钥时，由操作者选择已授权密钥，通过 SSH Host 配置或仅本次进程的 `GIT_SSH_COMMAND='ssh -i /absolute/path/to/approved-key -o IdentitiesOnly=yes'` 配合 `git ls-remote` / `git clone` 使用。不要复制别人的密钥、改全局身份或把密钥正文写入文档。权限未解决就停止远端获取；本地已有快照的演练只能报告“使用本地快照”，不能冒充新机网络 clone 成功。
+
+如果试点分支已经合入稳定分支，使用维护者公布的稳定分支或固定 commit，不盲目沿用本文的试点分支名。两个公共仓升级后不能直接续跑旧任务：先审核 diff 和新锁；如果因此改动业务仓治理文件或建立了新 HEAD，按第 8.2 节创建关联修订，从新基线重新分析。
 
 先确认真实环境，不要只修改版本声明：
 
@@ -95,6 +128,8 @@ node --version
 pnpm --version
 omp --version
 ```
+
+初建仓前还应检查 `git config user.name`、`git config user.email`。只在当前新仓按团队约定补齐缺项，不改全局 Git 身份。pnpm 安装后在业务仓再次执行 `pnpm --version`，应解析为 `packageManager` 固定的 `10.28.1`；不能用父目录里的全局版本代替项目版本。
 
 初始化前不要清理或覆盖已有 `.factory`、`MISSION.md`、未提交改动。已有治理目录会被拒绝覆盖。
 
@@ -149,6 +184,8 @@ pnpm run stylelint:ci
 pnpm run typecheck
 pnpm run test:unit
 pnpm run build
+FRONTEND_BOOTSTRAP_PROJECT="$PWD" node --test \
+  ../awesome-rules/skills/frontend-repo-bootstrap/tests/eslint-scope.test.mjs
 git config --get core.hooksPath || true
 git status --short
 ```
@@ -158,7 +195,7 @@ git status --short
 bootstrap 只提供 Vitest、覆盖率采集入口和 Lefthook 骨架；它的 `check` 会持续提示覆盖率须由 `frontend-unit-test-setup` 独立检查，不会替该 Skill 回写“已完成”。在接入 Factory 前，让具备本仓 Rules 的 AI 明确执行：
 
 ```text
-请完整读取并执行 awesome-rules/skills/frontend-unit-test-setup/SKILL.md，
+请从业务仓读取并执行 ../awesome-rules/skills/frontend-unit-test-setup/SKILL.md，
 为当前 Vue/TypeScript 空壳仓完成全量源码分类、普通文件 80%/核心文件 90%
 逐文件行覆盖率门禁，以及 pre-commit/pre-push 的正反向隔离验证。
 只接入基础设施，不创建远端、不推送，不把配置存在冒充 Hook 已生效；
@@ -202,7 +239,7 @@ project/
 └── README.md
 ```
 
-`docs` 是业务事实来源；`artifacts/factory-local/` 是 Factory 的任务证据缓存，两者不能混用。文档变更后，恢复任务会比较引用文件和版本摘要；检测到变化时会阻断并要求从 `requirement` 或更早阶段重跑，不会静默沿用旧 Spec。
+`docs` 是业务事实来源；`artifacts/factory-local/` 是 Factory 的任务证据缓存。只有完成下文 `docs_context` 显式登记后，运行器才会自动选择相关文档、保存版本摘要并在恢复时检查变化；只创建目录或索引不会启用这项能力。变更已引用文档会阻断恢复，按指引从 `requirement` 或更早阶段重跑。
 
 ### 4.2 新建需求文件
 
@@ -241,6 +278,35 @@ project/
 
 验收条件必须写成可观察行为，而不是“功能可用”“样式还原良好”这类无法判定的句子。每条 AC 最终都要映射到命令、Mock、浏览器、Figma 或测试环境证据。
 
+### 4.3 在初始化前登记文档与有效规范
+
+先编写 `docs/README.md`，以真实 Markdown 链接登记编码规范、UI 规范、需求及本次接口文档。再复制维护者提供的配置示例并按项目修改：
+
+```bash
+cd ~/work/factory-pilot/first-factory-app
+cp ../awesome-factory/templates/local/context-policy.example.json docs/factory-context.json
+```
+
+示例启用 `docs_context`，使用 `docs/README.md` 作为索引；编码/UI 指南按前端领域总是读取，其他文档按 `triggers` 或 request 中的显式路径选择。逐项核对 `documents`：所有路径必须已在索引登记、文件真实非空；历史/执行/决策资料只允许显式引用，不能配置自动命中。未登记的文件不会因为放在 docs 下而自动进入上下文。
+
+`business_sources` 与阅读策略分开。示例为空列表，表示尚未登记可作为既有业务约束的现行规范。若确有经过维护者确认的规则，先核对原文、适用范围并用 `shasum -a 256 <文件>` 取得摘要，再加入 `business_sources.sources`：
+
+```json
+{
+  "id": "project-rules",
+  "path": "docs/engineering/project-rules.md",
+  "kind": "normative",
+  "status": "active",
+  "authority": "project-maintained",
+  "reviewed_sha256": "填写实际文件的64位SHA256",
+  "scope_paths": ["src/"]
+}
+```
+
+不要直接复制摘要占位值；不把草案、历史记录或 AI 建议登记为已确认规范。维护者确认是人工动作，内容摘要只负责固定字节。具体协议见[业务来源说明](design/clarification-business-sources.md)。
+
+`docs/factory-context.json` 顶层使用 `schema=factory-local/context-input/1`，仅包含 `docs_context` 和 `business_sources`。初始化会在安装治理文件前验证，再把策略写入受控配置并生成安装摘要。已有 `.factory` 的仓不能重复 init；配置变更须由维护者审核，更新运行时锁及 installation 摘要，普通成员只运行 check，不自行刷新摘要放行。
+
 ## 5. 初始化 Factory
 
 ### 5.1 推荐的一站式初始化
@@ -249,7 +315,8 @@ project/
 
 ```bash
 cd ~/work/factory-pilot
-python3 awesome-factory/tools/factory-local-setup.py init first-factory-app
+python3 awesome-factory/tools/factory-local-setup.py init first-factory-app \
+  --context-file first-factory-app/docs/factory-context.json
 ```
 
 初始化脚本会：
@@ -261,19 +328,23 @@ python3 awesome-factory/tools/factory-local-setup.py init first-factory-app
 5. 自动把 `artifacts/factory-local/` 加入本机 Git exclude。
 6. 写入初始化节点日志、退出码、快照和 `summary.json`。
 
+确认收据中 `context-input-validation.docs_context_enabled=true`，体检节点 `project-context` 通过。文档未登记、规范摘要不匹配、路径越界或空文件时，初始化必须在写入 `.factory` / `MISSION.md` 前阻断。省略 `--context-file` 可接入最小运行器，但会明确记录上下文自动治理未启用，不能声称 docs 接线完成。
+
 初始化只改目标仓的 Factory 配置和治理文件，不安装业务依赖、不调用模型、不登录 Figma、不提交、不推送。
 
 bootstrap 基线中的 `.prettierignore` 已排除 `.factory/` 和 `artifacts/factory-local/`：前者由安装摘要保护，后者是本机运行证据。不要用 `prettier --write` 改写受锁定的 `.factory` 来消除格式提示；如果旧 profile 缺少这些忽略项，应先升级并重跑 bootstrap 检查。
 
-本指南对应的 bootstrap profile 为 `1.0.1`。已有 `1.0.0` 安装必须使用受控升级模式；普通 `plan/apply` 会把业务仓判为冲突，不能用于升级：
+本指南对应的 bootstrap profile 为 `1.0.2`。已有 `1.0.0` / `1.0.1` 安装必须使用受控升级模式；普通 `plan/apply` 会把业务仓判为冲突，不能用于升级：
 
 ```bash
 python3 "$BOOTSTRAP" plan --upgrade --target "$APP" --profile vue-admin
 python3 "$BOOTSTRAP" apply --upgrade --target "$APP" --profile vue-admin --install
-python3 "$BOOTSTRAP" check --target "$APP" --profile vue-admin
+python3 "$BOOTSTRAP" check --target "$APP" --profile vue-admin --check-mode project
 ```
 
 人工确认升级计划只把 `.prettierignore` 等预期受控文件列入 `replacements`，业务源码、docs、覆盖率脚本和合法扩展列为保留或不在受控范围。受控文件在安装后被修改、安装锁不合法或 package 字段冲突时会 fail-closed；不要改用普通 `apply`、force 或手改锁摘要。
+
+`--check-mode project` 不比较 `scaffold_files`，保留已开发的 Vue 入口/页面和允许删除的示例；其他工程配置仍受检。未知或未来 profile 版本会阻断，同版本升级只返回 noop。
 
 如果两个公共仓不与业务仓并列，初始化时显式提供 `AWESOME_RULES_ROOT=/absolute/path/to/awesome-rules`。初始化会把它换算为业务仓中的相对 `rules_path`；团队接入优先保持并列目录布局，避免每台机器反复改共享配置和重锁。
 
@@ -323,19 +394,29 @@ python3 .factory/quality-gate.py
 
 只要任一命令非零，就先查看 `artifacts/factory-local/onboarding/<run-id>/summary.json` 和对应日志，不进入业务任务。`check` 只探测 OMP 工具存在，不代表账号已登录；真正的模型调用仍以首任务结果为准。
 
+体检后再看一次 `git status --short`：mutation 可能生成 `.factory/mutations/evidence-stamp.json`（周界绑定与执行时间）。将它明确记为体检产物，审核其内容和治理策略；不要混入业务提交，也不要为了清空状态删除未知文件。后续任务必须从可解释的基线开始，已有业务 WIP 与体检产物分别记录；运行期间不再提交或改写这些输入。
+
 ## 6. 按阶段运行第一个任务
 
 ### 6.1 先完成 Spec 独立审查，不直接让 AI 改代码
 
 ```bash
 cd ~/work/factory-pilot/first-factory-app
+# 首用户先检查分类，不调用模型、不修改业务源码
 python3 .factory/run.py \
   --task first-page-pilot \
   --request-file docs/requirements/first-page.md \
+  --only-stage classify
+
+# 核对 classification.json 的 domain/has_design/execution_route，再继续
+python3 .factory/run.py \
+  --task first-page-pilot \
+  --request-file docs/requirements/first-page.md \
+  --resume \
   --only-stage spec-review
 ```
 
-这条命令从 `classify` 顺序执行到 `spec-review`，不是跳过前置阶段。默认分析授权上限就是 `spec-review`，因此不会修改业务代码。首次真实模型调用会同时验证 OMP 登录状态。
+第二条命令从已完成的分类继续顺序执行到 `spec-review`，不是跳过前置阶段。分类属于可解释的规则路由，不能保证理解任意自然语言；首次接入时核对其证据与原始需求，发现歧义先修订需求或路由规则，从 classify 重跑。默认分析授权上限就是 `spec-review`，因此不会修改业务代码。首次真实模型调用会同时验证 OMP 登录状态。
 
 分析模式默认只授权到编码前 `spec-review`。完成后先检查：
 
@@ -440,7 +521,20 @@ python3 .factory/run.py \
   --authorize-through verify
 ```
 
-如果 Spec 要求浏览器或测试环境证据，Runner 会生成待填写的请求文件；不能用“命令退出 0”替代这些证据。典型命令如下：
+如果 Spec 要求浏览器或测试环境证据，Runner 会生成待填写的请求文件；不能用“命令退出 0”替代这些证据。人工执行项通过 `evidence_type=browser|integrity|other` 区分浏览器、源码与治理完整性、其他证据。前端浏览器验收必须有 required 的 browser 项；只有完整性检查通过或旧 Spec 未声明证据类型时，仍会停在待验收。典型命令如下：
+
+若先停在 `pending_environment`，打开任务目录的 `preflight-request.json`、`preflight-guide.json` 和 `preflight-result.json`。把请求复制成新的输入收据，保留绑定字段、check ID 和 environment；实际检查环境后再填写 `executor`、带时区的 `checked_at`、状态及证据：
+
+```bash
+cp artifacts/factory-local/first-page-pilot/preflight-request.json \
+  artifacts/factory-local/first-page-pilot/readiness-evidence.input.json
+# 按真实观察填写新输入文件，随后恢复
+python3 .factory/run.py --task first-page-pilot \
+  --request-file docs/requirements/first-page.md --resume \
+  --readiness-evidence artifacts/factory-local/first-page-pilot/readiness-evidence.input.json
+```
+
+endpoint 项的 `details` 需要 `url` 和 `observation`；contract 项需要 `version` 和 `source`；identity 项需要无凭证的测试身份 `alias` 与实际 `permissions`。每项执行证据使用相对收据目录的 `artifacts[].path` 和该文件实际 `sha256`；默认 24 小时过期，verify 会复核。纯本地且无外部前置项的 Spec 不要求伪造环境收据。
 
 ```bash
 # 质量门（由 factory-local.json 的真实命令决定）
@@ -458,6 +552,8 @@ python3 .factory/run.py \
 ```
 
 使用一份统一验证收据覆盖 `verification.request.json` 中的全部 checks；浏览器截图、录屏或交互日志作为对应 check 的 artifacts 引用。不要同时传 `--verification-evidence` 与 `--browser-evidence`，运行器会明确拒绝，避免其中一份证据被静默忽略。验证收据必须绑定当前 `task_id`、request 摘要、Spec 摘要、契约摘要和实际证据文件摘要。Mock 只证明本地数据态和前端行为；若 Spec 标记测试环境为必验，Mock 通过后仍不能关闭该要求。
+
+填写步骤是：复制 `verification.request.json` 为新输入文件 → 启动项目开发服务 → 逐条执行 AC 对应操作 → 保存截图、控制台/交互日志 → 计算证据摘要 → 按实际结果填写状态 → 传给 `--verification-evidence`。Spec 的命令项由运行器执行；`verification.request.json` 的 `checks` 只列需要实际执行者补证的 manual 项。证据路径必须是收据目录内的非空真实文件，不能使用占位截图、另一个任务的结果或只改状态。失败项保留 `failed` 和原因；尚未验证保留 `NOT_RUN`，不要为关闭任务填 `passed`。
 
 只有进入 verify 后才会出现 `quality-gate-receipt.json`；它绑定当前 `task_id/attempt_id`。对应 attempt 的 `quality/` 保存覆盖率等质量子命令原始收据和日志。即使质量门失败，这些文件也会进入该 attempt 的 `partial/`/manifest，不能把 Spec Review 阶段尚未生成它们误判为缺失。
 
@@ -527,17 +623,52 @@ python3 .factory/run.py \
 
 ### 8.2 需求或文档变了
 
-不要直接编辑旧的 `passed` 产物。需求、接口契约、Figma 引用或受控业务规则变化时，从 `classify` 或 `requirement` 重新跑；旧 attempt 保留作历史。若只是修订任务，应使用 `--revision-of` 和 `--revision-reason`，新任务不会继承旧任务的通过状态。
+不要编辑旧的 `passed` 产物、worktree-baseline 或摘要来接纳变化。普通技术重试适用于请求、源码基线、HEAD、治理与 Rules 锁均未变化的情况。需求、文档、契约、Figma、治理文件或工程 HEAD 已变化时，先审阅新输入与必要的工程基线，再创建关联修订；旧 task_id 和 attempts 保留，新 task_id 通过 parent_task_id 关联，不继承通过状态。
+
+```bash
+# 仅登记新任务，不与 --resume / --only-stage 混用
+python3 .factory/run.py \
+  --task first-page-pilot-r2 \
+  --request-file docs/requirements/first-page.md \
+  --revision-of first-page-pilot \
+  --revision-reason '工程或需求输入已更新，从审阅后的新基线重新分析' \
+  --authorize-through spec-review
+
+# 登记会复制 request；后续使用新任务内的不可变请求路径
+python3 .factory/run.py \
+  --task first-page-pilot-r2 \
+  --request-file artifacts/factory-local/first-page-pilot-r2/request.md \
+  --resume --only-stage spec-review
+```
+
+登记会自动保存父任务快照；额外使用 `--revision-evidence` 时引用不可变的 attempt 或独立归档文件，避免引用会随状态推进更新的顶层 result.json/run-state.json。父任务已有后续修订时，跟随 `superseded_by` 和恢复命令找到当前任务，不再次覆盖旧父任务。Spec 审阅后再按新任务显式授权 implement/verify。原任务已有 AI 代码时先审阅和保存其证据；只恢复明确属于该任务且可还原的改动，不清理其他人的 WIP，也不把旧通过状态转给新任务。
 
 ### 8.3 常见阻断
+
+若 `pending_spec_review` 指出了已有需求的覆盖或验证缺口，先阅读 `spec-review-result.json`；在请求、源码、HEAD 和版本锁均未变化时执行：
+
+```bash
+python3 .factory/run.py \
+  --task first-page-pilot \
+  --request-file docs/requirements/first-page.md \
+  --from-stage spec --only-stage spec-review
+```
+
+Factory 将上一份审查中的 gap/findings 作为只读技术反馈交回 Spec 节点，再执行新的独立审查；反馈不授权新增业务、不继承通过状态。若问题需要变更业务约定，先取得真实答复，按第 8.2 节建立关联修订。关联修订可用 `--revision-evidence` 引用已归档的 `spec-review-result.json` 供诊断，同请求摘要和证据摘要均需匹配；仍必须重新分析和验收。
+
+编码后恢复时，需求中的源码现状引用应对照需求分析阶段保存的内容快照及阶段收据验证；当前业务代码则对照编码后摘要和实际修改范围验证。分析快照独立于可重跑的实施阶段，正常实现会改变旧源码原文，不应因此把历史引用判成失效；历史快照缺失或被改写仍会阻断，不能手工重写需求引用来迁就新代码。
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `检测到现有 .factory 或 MISSION.md；拒绝覆盖` | 仓库已接入或有治理文件 | 不重复 init，运行 `.factory/setup.py check .` |
 | `缺少 README.md 良性负例载体` | 缺少 B-01 负例文档 | 新增真实 README，再重新初始化 |
+| `缺少 Git 基线提交` | 新仓还没有 HEAD，无法绑定源码版本 | 审阅工程差异并完成第一笔本地基线提交，再 init；失败审计保留，不会半装 `.factory` |
 | `rules-source BLOCKED` | `rules_path` 不存在或锁不匹配 | 准备 `awesome-rules`，审核路径和锁，不自动下载 |
 | `project-dependencies BLOCKED` | 没有 `node_modules` | 按项目锁文件执行 `pnpm install --frozen-lockfile` |
 | `缺少 package.json scripts.coverage:gate` | 覆盖率只接在 Hook 或尚未完成 | 执行 `frontend-unit-test-setup`，补当前工作树正式入口并完成正反向验证 |
+| 覆盖率脚本不出现在 `git status` | 旧 `.gitignore` 的 `coverage/` 误匹配 `scripts/coverage/` | 用 `git check-ignore -v <脚本>` 定位；经维护者审核，将产物规则改为根锚定 `/coverage/`、`/coverage-unit/`，不忽略校验程序 |
+| 已明确“没有设计稿”却要求 Figma 认证 | 分类版本仍使用关键词存在性判断 | 查看 `classification.json` 的路由和否定意图证据；升级并审核新锁，已有冻结任务按第 8.2 节创建关联修订，不伪造设计证据 |
+| `HEAD changed during Factory execution` | 当前任务的不可变基线与当前工程 HEAD 不同 | 核对中途提交/切分支/治理升级；保存历史，按第 8.2 节建关联修订，不重写旧基线 |
 | `OMP` 未找到/未登录 | 模型节点不可用 | 交互终端安装并登录，不把凭证写入仓库 |
 | `docs 引用资料已变化` | 已引用文档摘要发生变化 | 查看差异，从 `requirement` 或更早阶段重跑 |
 | `--only-stage 超出授权上限` | 运行选项不能扩大授权 | 用户明确授权后使用 `--authorize-through` |
@@ -548,9 +679,9 @@ python3 .factory/run.py \
 
 一个可交接的首个前端任务至少满足：
 
-- [ ] `frontend-repo-bootstrap check` 状态为 `passed`，不是 `files_applied` 或 `pending_install`；
+- [ ] 首次安装的 Bootstrap `check` 状态为 `passed`；业务开发后与团队接手使用 `check --check-mode project`，同时通过项目质量与覆盖率命令；`files_applied` / `pending_install` 均不算安装完成；
 - [ ] 覆盖率 Skill 自身的机器清单、逐文件阈值收据和 Hook 正反向证据齐全，`pnpm run coverage:gate` 已对当前工作树完成正反向验证并被 Factory 质量命令登记；bootstrap 的 `coverage_gate` 提示只负责指向该独立验收，不作为完成状态；
-- [ ] 工程基线和 Factory 配置分别经过人工审阅并建立本地提交，首任务开始前工作区干净；
+- [ ] 工程基线和 Factory 配置分别经过人工审阅并建立本地提交；首任务无未审阅业务改动，体检产物或其他既有 WIP 已明确记录，运行期间不改写基线；
 - [ ] `setup.py check`、Factory 回归和项目质量门通过；
 - [ ] 所有阶段都有对应收据、日志、退出码和恢复命令；
 - [ ] verify 的 `quality-gate-receipt.json` 绑定当前 `task_id/attempt_id`，失败时仍归档在对应 attempt，覆盖率子命令的原始退出码可追溯；
@@ -598,13 +729,15 @@ cd ~/work/factory-pilot/first-factory-app
 pnpm install --frozen-lockfile
 
 python3 ../awesome-rules/skills/frontend-repo-bootstrap/scripts/bootstrap.py \
-  check --target . --profile vue-admin
+  check --target . --profile vue-admin --check-mode project
 python3 .factory/setup.py check .
 python3 .factory/run.py --check-runtime
 python3 .factory/quality-gate.py
 ```
 
 如果公共 Factory 或 Rules 版本变化，先看差异，不直接刷新锁。由维护者审核后运行公共锁定工具并提交共享锁文件；普通成员不得通过手改摘要绕过漂移阻断。
+
+团队接手不再校验初始示例页面的逐字内容。`project` 检查只验证工程基线，仍要执行 `quality:check`、`coverage:gate` 和本次 Spec 的业务验收；不能以此忽略测试失败或任意修改治理配置。
 
 ## 12. 首用户遇到问题时需要提供什么
 
@@ -625,3 +758,7 @@ git status --short：...
 ```
 
 Factory 已生成 `recovery_command` 时优先原样附上，但先确认需求、规则、文档和源码没有在失败后发生变化。不要删除任务目录重新制造“干净成功”。
+
+## 13. 维护者的隔离演练记录
+
+参见 [2026-11-03 接入修订与演练记录](design/first-frontend-user-rehearsal-20261103.md)。记录区分网络获取、工程初始化、真实模型阶段、门禁反例与浏览器验收；失败和恢复历史也保留。它提供本次环境的复核依据，不能替代使用者在自己账号、操作系统与项目上的验收。

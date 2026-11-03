@@ -1,5 +1,6 @@
 """Real CLI in temporary repos: installation, repeat checks, no overwrites."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -31,8 +32,20 @@ def fixture_repo(tmp_path):
 
 
 def invoke(repo, *args):
-    return subprocess.run([sys.executable, str(TOOL), *args, str(repo)], capture_output=True, text=True,
+    return subprocess.run([sys.executable, str(TOOL), args[0], str(repo), *args[1:]], capture_output=True, text=True,
                           timeout=120)
+
+
+def test_unborn_repository_reports_audited_recovery_without_partial_install(tmp_path):
+    repo = tmp_path/'unborn'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    result = invoke(repo, 'init')
+    assert result.returncode == 1
+    assert '缺少 Git 基线提交' in result.stdout
+    assert not (repo/'.factory').exists()
+    summary = next((repo/'artifacts/factory-local/onboarding').glob('*/summary.json'))
+    assert json.loads(summary.read_text())['nodes'][0]['status'] == 'BLOCKED'
 
 
 def test_install_check_and_existing_install_no_clobber(tmp_path):
@@ -70,6 +83,53 @@ def test_existing_foreign_factory_is_preserved(tmp_path):
     file=repo/'.factory/owner.txt';file.write_text('user content')
     assert invoke(repo, 'init').returncode == 1
     assert file.read_text()=='user content'
+    assert not (repo/'MISSION.md').exists()
+
+
+def context_input(repo):
+    (repo/'docs/README.md').write_text('# Document index\n\n[Project rules](spec.md)\n')
+    policy = {
+        'schema': 'factory-local/context-input/1',
+        'docs_context': {
+            'schema': 'factory-local/docs-context-policy/1', 'enabled': True,
+            'index': 'docs/README.md',
+            'documents': [{'path': 'docs/spec.md', 'kind': 'normative', 'always': True,
+                           'triggers': [], 'domains': ['frontend']}],
+        },
+        'business_sources': {'schema': 'factory-local/business-source-policy/1', 'sources': [{
+            'id': 'project-rules', 'path': 'docs/spec.md', 'kind': 'normative', 'status': 'active',
+            'authority': 'project-maintained', 'scope_paths': ['src/'],
+            'reviewed_sha256': hashlib.sha256((repo/'docs/spec.md').read_bytes()).hexdigest(),
+        }]},
+    }
+    path = repo/'docs/factory-context.json'
+    path.write_text(json.dumps(policy))
+    return path, policy
+
+
+def test_init_locks_explicit_document_selection_and_reviewed_sources(tmp_path):
+    repo = fixture_repo(tmp_path)
+    path, policy = context_input(repo)
+    result = invoke(repo, 'init', '--context-file', str(path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    config = json.loads((repo/'.factory/factory-local.json').read_text())
+    assert config['docs_context'] == policy['docs_context']
+    assert config['business_sources'] == policy['business_sources']
+    changed = repo/'docs/spec.md'
+    changed.write_text('# Unreviewed replacement rules\n')
+    result = invoke(repo, 'check')
+    assert result.returncode == 1
+    assert '版本漂移' in result.stdout
+
+
+def test_bad_context_fails_before_any_governance_installation(tmp_path):
+    repo = fixture_repo(tmp_path)
+    path, policy = context_input(repo)
+    policy['business_sources']['sources'][0]['reviewed_sha256'] = '0' * 64
+    path.write_text(json.dumps(policy))
+    result = invoke(repo, 'init', '--context-file', str(path))
+    assert result.returncode == 1
+    assert not (repo/'.factory').exists()
     assert not (repo/'MISSION.md').exists()
 
 

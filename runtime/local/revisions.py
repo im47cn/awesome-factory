@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -18,8 +19,21 @@ def required_verification(task: Path) -> list[dict]:
     if not path.exists():
         return []
     contract = json.loads(path.read_text())
-    return [{key: item[key] for key in ('id', 'kind', 'environment')}
-            for item in contract['verification'] if item.get('required') is True]
+    result = []
+    for item in contract['verification']:
+        if item.get('required') is not True:
+            continue
+        if (not isinstance(item.get('id'), str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', item['id'])
+                or item.get('kind') not in {'command', 'manual'}
+                or item.get('environment') not in {'local', 'mock', 'test-environment'}
+                or (item.get('kind') == 'command' and 'evidence_type' in item)
+                or item.get('evidence_type') not in {None, 'browser', 'integrity', 'other'}):
+            raise ValueError('修订必验项 ID、类型或环境无效')
+        result.append({key: item[key] for key in ('id', 'kind', 'environment', 'evidence_type') if key in item})
+    if len({item['id'] for item in result}) != len(result):
+        raise ValueError('修订必验 ID 重复')
+    return result
 
 
 def validate_revision(root: Path, task: Path) -> None:

@@ -89,7 +89,41 @@ def quality_commands(repo):
             for name in names if name in scripts]
 
 
-def install(repo, audit):
+def context_module(name):
+    spec = importlib.util.spec_from_file_location('onboarding_' + name, SOURCE / 'runtime/local' / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate_context(repo, values):
+    """Validate operator-selected documents; never infer their normative authority."""
+    if not isinstance(values, dict) or set(values) - {'docs_context', 'business_sources'}:
+        raise ValueError('上下文输入只能包含 docs_context 和 business_sources')
+    docs = values.get('docs_context')
+    if docs is not None:
+        module = context_module('docs_context')
+        _, entries = module.validate_policy(repo, docs)
+        for entry in entries:
+            path = module.source_path(repo, entry['path'])
+            if not path.read_bytes().strip():
+                raise ValueError('登记文档为空：' + entry['path'])
+    sources = values.get('business_sources', {'schema': 'factory-local/business-source-policy/1', 'sources': []})
+    context_module('business_sources').capture(repo, sources, {})
+    return {'business_sources': sources, **({'docs_context': docs} if docs is not None else {})}
+
+
+def read_context_input(repo, path):
+    if path is None:
+        return validate_context(repo, {})
+    path = path.expanduser().resolve()
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict) or value.get('schema') != 'factory-local/context-input/1':
+        raise ValueError('上下文输入 schema 必须为 factory-local/context-input/1')
+    return validate_context(repo, {key: value[key] for key in value if key != 'schema'})
+
+
+def install(repo, audit, context_file=None):
     tool = SOURCE / 'tools/factory-init.py'
     if not tool.is_file():
         raise ValueError('新仓接入请使用 awesome-factory/tools/factory-local-setup.py init <项目>；clone 后使用 check')
@@ -104,6 +138,11 @@ def install(repo, audit):
     # any governance files. A missing coverage gate is an incomplete engineering
     # baseline, not a partially installed Factory repository.
     commands = quality_commands(repo)
+    context = read_context_input(repo, context_file)
+    audit.record('context-input-validation', 'PASSED',
+                 docs_context_enabled='docs_context' in context,
+                 normative_sources=len(context['business_sources']['sources']),
+                 note='未配置 docs_context 时不启用文档自动选择和恢复漂移检查')
     # Keep README outside perimeter for B-01; protect actual existing governance files.
     perimeter = ['.gitignore']
     perimeter += [p for p in ['scripts/', 'docs/', '.aliyun/', '.github/', '.lefthook/', 'lefthook.yml',
@@ -144,6 +183,7 @@ def install(repo, audit):
         intent_routing={'remote_handoff': {'enabled': True, 'executor': 'awesome-factory',
             'local_runner_may_execute_remote_actions': False}},
         quality_commands=commands)
+    cfg.update(context)
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + '\n')
     mission = repo / 'MISSION.md'
     text = mission.read_text()
@@ -189,6 +229,9 @@ def check(repo, audit):
     if drift:
         return
     cfg = json.loads((factory / 'factory-local.json').read_text())
+    validate_context(repo, {key: cfg[key] for key in ('docs_context', 'business_sources') if key in cfg})
+    audit.record('project-context', 'PASSED', docs_context_enabled=cfg.get('docs_context') is not None,
+                 note='仅显式登记的文档和现行规范可形成上下文证据')
     safe = cfg.get('execution_mode') == 'local' and cfg.get('remote_side_effects') is False and cfg.get('auto_commit') is False
     audit.record('local-policy', 'PASSED' if safe else 'BLOCKED')
     audit.run('python', [sys.executable, '--version'])
@@ -214,7 +257,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['init', 'check'])
     parser.add_argument('repo', type=Path, nargs='?', default=Path.cwd())
+    parser.add_argument('--context-file', type=Path,
+                        help='仅 init：维护者审核的 docs_context/business_sources JSON，在安装和锁定前验证')
     args = parser.parse_args(argv)
+    if args.command != 'init' and args.context_file is not None:
+        parser.error('--context-file 仅用于 init；check 不修改配置或刷新锁')
     repo = args.repo.expanduser().resolve()
     try:
         if Path(git(repo, 'rev-parse','--show-toplevel')).resolve() != repo:
@@ -228,11 +275,17 @@ def main(argv=None):
                 raise ValueError('同一仓库正在初始化或检查，请等待结束')
             ensure_excludes(repo)
             audit = Audit(repo)
+            head = subprocess.run(['git', '-C', str(repo), 'rev-parse', '--verify', 'HEAD'],
+                                  capture_output=True, text=True)
+            if head.returncode:
+                audit.record('workspace-baseline', 'BLOCKED',
+                             reason='缺少 Git 基线提交；先按接入指南完成工程基线的本地提交，再运行 init/check')
+                return audit.finish()
             audit.record('workspace-baseline', 'PASSED', branch=git(repo,'branch','--show-current'),
-                         head=git(repo,'rev-parse','HEAD'), changed=git(repo,'status','--porcelain'))
+                         head=head.stdout.strip(), changed=git(repo,'status','--porcelain'))
             try:
                 if args.command == 'init':
-                    install(repo, audit)
+                    install(repo, audit, args.context_file)
                 check(repo, audit)
             except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
                 audit.record('setup-error', 'BLOCKED', reason=str(exc))

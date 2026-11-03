@@ -1,0 +1,35 @@
+{
+  "schema": "factory-local/context-input/1",
+  "docs_context": {
+    "schema": "factory-local/docs-context-policy/1",
+    "enabled": true,
+    "index": "docs/README.md",
+    "max_bytes": 98304,
+    "documents": [
+      {
+        "path": "docs/engineering/coding-standards.md",
+        "kind": "guidance",
+        "always": true,
+        "triggers": [],
+        "domains": ["frontend", "fullstack"]
+      },
+      {
+        "path": "docs/engineering/ui-design-guidelines.md",
+        "kind": "guidance",
+        "always": true,
+        "triggers": [],
+        "domains": ["frontend", "fullstack"]
+      },
+      {
+        "path": "docs/requirements/first-page.md",
+        "kind": "guidance",
+        "triggers": [],
+        "domains": ["frontend", "fullstack"]
+      }
+    ]
+  },
+  "business_sources": {
+    "schema": "factory-local/business-source-policy/1",
+    "sources": []
+  }
+}

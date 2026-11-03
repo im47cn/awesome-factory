@@ -72,7 +72,7 @@ STAGE_OUTPUTS = {
     "classify": ["classification.json", "remote-handoff.json"],
     "skill-discovery": ["skill-selection.json", "skill-routing.snapshot.json"],
     "design-analysis": ["design-analysis.md", "design-orchestration.json", "design-contract.json", "visual-contract.json"],
-    "requirement": ["requirement.md", "requirement-input.json", "requirement-contract.json",
+    "requirement": ["requirement.md", "requirement-input.json", "requirement-contract.json", "requirement-source-snapshot.json",
                     "requirement-validation.json", "stage-integrity.json"],
     "clarification": ["business-sources.snapshot.json", "clarification-contract.json", "clarification-result.json", "stage-integrity.json"],
     "spec": ["spec.md", "spec-input.json", "spec-contract.json", "spec-validation.json", "stage-integrity.json"],
@@ -234,7 +234,23 @@ def requirement_input(task: Path, request: Path) -> dict:
     }
 
 
-def _requirement_source(task: Path, request: Path, name: str) -> Path:
+class RejectedRequirementSource(ValueError):
+    """An explicitly disallowed observation must not become archived evidence."""
+
+
+def guard_requirement_source(name: str, baseline: dict, *, business_only: bool) -> None:
+    policy = load_local_factory_config()
+    forbidden = ['.git', '.factory', 'MISSION.md', 'artifacts/factory-local']
+    if business_only:
+        forbidden.extend(Path(item).as_posix().rstrip('/') for item in policy.get('perimeter', []))
+    sensitive = re.search(r'(^|/)(?:\.env(?:\..*)?|\.envrc|\.npmrc|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx|keystore))$', name, re.I)
+    private_config = name in {'.aws/credentials', '.docker/config.json'}
+    if (baseline.get('files', {}).get(name, {}).get('kind') != 'file' or sensitive or private_config
+            or any(name == item or name.startswith(item + '/') for item in forbidden)):
+        raise RejectedRequirementSource('需求引用触及未纳入基线、治理或凭据路径；已隔离该需求产物')
+
+
+def _requirement_source(task: Path, request: Path, name: str, *, historical: bool = False, business_only: bool = False) -> Path:
     task_sources = {
         "request": request,
         "classification.json": task / "classification.json",
@@ -249,15 +265,83 @@ def _requirement_source(task: Path, request: Path, name: str) -> Path:
     else:
         if not isinstance(name, str) or Path(name).is_absolute() or ".." in Path(name).parts or "\\" in name:
             raise ValueError("需求证据路径非法")
-        path = (ROOT / name).resolve()
+        lexical = ROOT / name
+        if any(p.is_symlink() for p in [lexical, *lexical.parents] if p.is_relative_to(ROOT)):
+            raise ValueError('需求证据不能经过符号链接')
+        path = lexical.resolve()
         if not path.is_relative_to(ROOT.resolve()):
             raise ValueError("需求证据路径越界")
+        if historical:
+            manifest = task/'requirement-source-snapshot.json'
+            receipt = object_file(task/'stage-receipts.json').get('requirement', {})
+            archive = Path(receipt.get('artifact_dir', ''))
+            expected = receipt.get('outputs', {}).get(manifest.name)
+            if (not expected or any(p.is_symlink() for p in [manifest, archive/manifest.name, archive, *archive.parents] if p.is_relative_to(task))
+                    or not archive.resolve().is_relative_to((task/'attempts').resolve())
+                    or digest(manifest) != expected or digest(archive/manifest.name) != expected):
+                raise ValueError('需求源码历史快照缺失或与分析收据不一致')
+            frozen = object_file(manifest)
+            inputs = object_file(task/'requirement-input.json')
+            if (frozen.get('schema') != 'factory-local/requirement-source-snapshot/1'
+                    or any(frozen.get(key) != inputs[key] for key in ('task_id', 'request_sha256', 'source_sha256'))
+                    or hashlib.sha256(json.dumps(frozen.get('snapshot'), sort_keys=True, separators=(',', ':')).encode()).hexdigest() != inputs['source_sha256']):
+                raise ValueError('需求源码历史快照与分析基线不一致')
+            record = frozen.get('files', {}).get(path.relative_to(ROOT.resolve()).as_posix())
+            if not isinstance(record, dict):
+                raise ValueError('需求源码历史内容缺失')
+            original = frozen['snapshot']['files'].get(path.relative_to(ROOT.resolve()).as_posix(), {})
+            guard_requirement_source(path.relative_to(ROOT.resolve()).as_posix(), frozen['snapshot'], business_only=True)
+            if original.get('kind') != 'file' or original.get('sha256') != record.get('sha256'):
+                raise ValueError('需求源码历史内容与分析文件基线不一致')
+            relative = Path(record.get('path', ''))
+            saved = task/relative
+            base = task/'requirement-sources'
+            if (relative.is_absolute() or '..' in relative.parts
+                    or any(p.is_symlink() for p in [saved, *saved.parents] if p.is_relative_to(task))
+                    or not saved.resolve().is_relative_to(base.resolve())
+                    or not base.resolve().is_relative_to(task.resolve())
+                    or not saved.is_file() or digest(saved) != record.get('sha256')):
+                raise ValueError('需求源码历史内容缺失、越界或摘要不匹配')
+            path = saved
+        elif path not in task_sources.values():
+            guard_requirement_source(path.relative_to(ROOT.resolve()).as_posix(), worktree_snapshot(ROOT), business_only=business_only)
     if not path.is_file() or path.is_symlink():
         raise ValueError("需求证据缺失或为符号链接：" + name)
     return path
 
 
-def validate_requirement(task: Path, request: Path, *, check_source: bool = True) -> dict:
+def freeze_requirement_sources(task: Path, request: Path, contract: dict, inputs: dict) -> None:
+    """Capture actual source bytes at analysis time, independently of later retries."""
+    baseline = worktree_snapshot(ROOT)
+    base = task/'requirement-sources'
+    if any(p.is_symlink() for p in [base, *base.parents] if p.is_relative_to(task)):
+        raise ValueError('需求源码快照目录不能经过符号链接')
+    directory = task/'requirement-sources'/uuid.uuid4().hex
+    directory.mkdir(parents=True)
+    files = {}
+    for row in contract['observations']:
+        if row['kind'] != 'source':
+            continue
+        source = _requirement_source(task, request, row['source']['path'], business_only=True)
+        name = source.relative_to(ROOT.resolve()).as_posix()
+        entry = baseline['files'].get(name, {})
+        guard_requirement_source(name, baseline, business_only=True)
+        if name in files:
+            continue
+        saved = directory/str(len(files))
+        saved.write_bytes(source.read_bytes())
+        if digest(saved) != entry['sha256']:
+            raise ValueError('需求源码快照与分析文件基线不一致')
+        files[name] = {'path': saved.relative_to(task).as_posix(), 'sha256': digest(saved)}
+    if (source_digest() != inputs['source_sha256']
+            or hashlib.sha256(json.dumps(baseline, sort_keys=True, separators=(',', ':')).encode()).hexdigest() != inputs['source_sha256']):
+        raise ValueError('保存需求源码快照期间源码变化')
+    write_json(task/'requirement-source-snapshot.json', {
+        'schema': 'factory-local/requirement-source-snapshot/1',
+        **{key: inputs[key] for key in ('task_id', 'request_sha256', 'source_sha256')}, 'snapshot': baseline, 'files': files})
+
+
+def validate_requirement(task: Path, request: Path, *, check_source: bool = True, freeze_sources: bool = False) -> dict:
     errors, hashes = [], {}
     try:
         document = task / "requirement.md"
@@ -297,7 +381,16 @@ def validate_requirement(task: Path, request: Path, *, check_source: bool = True
                 continue
             name = text(source.get("path"), f"{row['id']}.source.path")
             quote = text(source.get("quote"), f"{row['id']}.source.quote")
-            if quote not in _requirement_source(task, request, name).read_text(errors="replace"):
+            try:
+                evidence_source = _requirement_source(task, request, name,
+                    historical=not check_source and row['kind'] == 'source', business_only=row['kind'] == 'source')
+            except RejectedRequirementSource:
+                # Preserve a diagnostic shell, never archive a rejected quote/body.
+                write_json(contract_path, {'schema': 'factory-local/rejected-requirement/1',
+                    'task_id': task_identity(task), 'reason': 'disallowed-source; re-run requirement'})
+                document.write_text('# 需求产物已隔离\n\n引用了受限来源，请按允许范围重新分析。\n')
+                raise
+            if quote not in evidence_source.read_text(errors="replace"):
                 errors.append(f"{row['id']}: 证据引用未命中原文")
         candidates = rows(contract.get("behavior_candidates"), "behavior candidates", nonempty=True)
         candidate_ids = {row["id"] for row in candidates}
@@ -357,6 +450,8 @@ def validate_requirement(task: Path, request: Path, *, check_source: bool = True
         if current["task_id"] not in body or not all(row["id"] in body for row in candidates):
             errors.append("requirement.md 缺少 task_id 或行为候选 ID")
         hashes = {"requirement_sha256": digest(document), "contract_sha256": digest(contract_path)}
+        if not errors and freeze_sources:
+            freeze_requirement_sources(task, request, contract, inputs)
     except (OSError, ValueError, TypeError, KeyError, SystemExit) as exc:
         errors.append(str(exc))
     result = {"schema": "factory-local/requirement-validation/1", "task_id": task_identity(task),
@@ -444,7 +539,7 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
                 errors.append("verification 条目须为对象")
                 continue
             vid = item.get("id")
-            if not isinstance(vid, str) or not vid or vid in verification_ids:
+            if not isinstance(vid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', vid) or vid in verification_ids:
                 errors.append("verification.id 缺失或重复")
                 continue
             verification_ids.add(vid)
@@ -457,10 +552,14 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
             if type(item.get("required")) is not bool:
                 errors.append(f"{vid}: 必须明确 required")
             if item.get("kind") == "command":
+                if 'evidence_type' in item:
+                    errors.append(f"{vid}: command 不接受人工证据类型 evidence_type")
                 argv = item.get("argv")
                 if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and x.strip() for x in argv):
                     errors.append(f"{vid}: 缺少有效 argv")
             elif item.get("kind") == "manual":
+                if item.get('evidence_type') not in {None, 'browser', 'integrity', 'other'}:
+                    errors.append(f"{vid}: evidence_type 无效")
                 steps = item.get("steps")
                 if not isinstance(steps, list) or not steps or not all(isinstance(x, str) and x.strip() for x in steps):
                     errors.append(f"{vid}: 缺少人工验证步骤")
@@ -476,7 +575,7 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
             current_plan = {item['id']: item for item in verification if isinstance(item, dict) and isinstance(item.get('id'), str)}
             for item in prior_required:
                 current_item = current_plan.get(item['id'], {})
-                if current_item.get('required') is not True or any(current_item.get(key) != item[key] for key in ('kind', 'environment')):
+                if current_item.get('required') is not True or any(current_item.get(key) != item[key] for key in item if key != 'id'):
                     errors.append(f"修订不能丢弃父任务必验项或降低环境要求: {item['id']}")
         if not isinstance(acceptance, list) or not acceptance:
             errors.append("缺少 acceptance 验收条件")
@@ -568,7 +667,7 @@ def spec_review_input(task: Path, request: Path, context_sha256: str, run_id: st
 
 def validate_spec_review(expected: dict, report: dict, context: Path,
                          requirement_ids: list[str], clarification_ids: list[str],
-                         acceptance_ids: list[str]) -> dict:
+                         acceptance_ids: list[str], *, context_contents: dict | None = None) -> dict:
     if not isinstance(report, dict) or report.get("schema") != "factory-local/spec-review-result/1":
         raise ValueError("Spec 独立审查报告 schema 无效")
     if any(report.get(key) != value for key, value in expected.items() if key != "schema"):
@@ -585,7 +684,11 @@ def validate_spec_review(expected: dict, report: dict, context: Path,
             quote = text(item.get("quote"), "spec review evidence quote")
             path = (context / name).resolve()
             if (Path(name).is_absolute() or not path.is_relative_to(context.resolve())
-                    or not path.is_file() or quote not in path.read_text(errors="replace")):
+                    or not path.is_file()):
+                raise ValueError("Spec 审查证据路径越界、缺失或引用不匹配")
+            body = (context_contents.get(path.relative_to(context.resolve()).as_posix(), b'').decode(errors='replace')
+                    if context_contents is not None else path.read_text(errors='replace'))
+            if quote not in body:
                 raise ValueError("Spec 审查证据路径越界、缺失或引用不匹配")
             if name in {"request.md", "requirement-contract.json", "clarification-contract.json",
                         "business-sources.snapshot.json", "design-contract.json", "visual-contract.json"}:
@@ -1375,6 +1478,111 @@ def omp(
 
 
 
+def spec_review_feedback(attempt, protected: dict | None = None) -> dict | None:
+    """Return diagnostic gaps, never prior approval or new business authority."""
+    base = (ROOT / 'artifacts/factory-local').resolve()
+    buffers = {}
+
+    def read(path):
+        path = Path(path)
+        if path.is_symlink() or not path.resolve().is_relative_to(base) or not path.is_file():
+            raise ValueError('Spec 审查反馈证据缺失、越界或使用符号链接')
+        path = path.resolve()
+        if path not in buffers:
+            buffers[path] = path.read_bytes()
+        return buffers[path]
+
+    def load(path, owner, expected_hash=None, historical=False):
+        raw = read(path)
+        if expected_hash is not None and hashlib.sha256(raw).hexdigest() != expected_hash:
+            raise ValueError('Spec 审查反馈证据摘要已改变')
+        report = json.loads(raw)
+        if not isinstance(report, dict) or report.get('schema') != 'factory-local/spec-review-result/1':
+            raise ValueError('Spec 审查反馈报告格式无效')
+        if report.get('task_id') != owner:
+            raise ValueError('Spec 审查反馈父任务绑定无效')
+        if report.get('request_sha256') != attempt.request_sha256:
+            if historical:
+                return None
+            raise ValueError('Spec 审查反馈请求绑定无效')
+        context = Path(report.get('context', ''))
+        if (not context.is_absolute() or context.is_symlink()
+                or not context.resolve().is_relative_to(base) or not context.is_dir()):
+            raise ValueError('Spec 审查反馈缺少有效只读上下文')
+        context = context.resolve()
+        # Revalidate against the immutable original input/output and context,
+        # not a few self-asserted report headers. Pending reviews have no pass to inherit.
+        if read(context.parent/'outputs/spec-review-result.json') != raw:
+            raise ValueError('Spec 审查反馈与原始归档输出不匹配')
+        original = json.loads(read(context.parent/'outputs/spec-review-input.json'))
+        if (not isinstance(original, dict) or original.get('schema') != 'factory-local/spec-review-input/1'
+                or original.get('workflow_version') != WORKFLOW_VERSION
+                or original.get('task_id') != owner or original.get('request_sha256') != attempt.request_sha256
+                or original.get('context') != str(context)):
+            raise ValueError('Spec 审查反馈原始输入绑定无效')
+        manifest = {file.relative_to(context).as_posix(): hashlib.sha256(read(file)).hexdigest()
+                    for file in context.rglob('*') if file.is_file() or file.is_symlink()}
+        if manifest != report.get('manifest') or manifest != original.get('manifest'):
+            raise ValueError('Spec 审查反馈只读上下文已改变')
+        context_hash = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+        names = {'request_sha256': 'request.md', 'requirement_sha256': 'requirement.md',
+                 'requirement_contract_sha256': 'requirement-contract.json',
+                 'clarification_sha256': 'clarification-contract.json', 'spec_sha256': 'spec.md',
+                 'contract_sha256': 'spec-contract.json', 'skill_selection_sha256': 'skill-selection.json'}
+        if any(original.get(key) != manifest.get(name) for key, name in names.items()):
+            raise ValueError('Spec 审查反馈上游摘要不匹配')
+        contract = json.loads(read(context/'spec-contract.json'))
+        if (original.get('context_sha256') != context_hash or contract.get('task_id') != owner
+                or original.get('source_sha256') != contract.get('source_sha256')
+                or not isinstance(original.get('review_run_id'), str) or not original['review_run_id']):
+            raise ValueError('Spec 审查反馈上下文或源码绑定无效')
+        requirement = json.loads(read(context/'requirement-contract.json'))
+        clarification = json.loads(read(context/'clarification-contract.json'))
+        expected = {key: value for key, value in original.items() if key not in {'context', 'manifest'}}
+        return validate_spec_review(expected, report, context,
+                                    [row['id'] for row in requirement['behavior_candidates']],
+                                    [row['id'] for row in clarification['rules']],
+                                    [row['id'] for row in contract['acceptance']],
+                                    context_contents={name: read(context/name) for name in manifest})
+
+    current = attempt.directory / 'superseded/spec-review-result.json'
+    candidates = []
+    if current.exists() or current.is_symlink():
+        candidates.append((current, attempt.task_id, None, False))
+    revision_path = attempt.task / 'revision.json'
+    if revision_path.is_file() and not candidates:
+        revision = object_file(revision_path)
+        for reference in revision.get('historical_evidence', []):
+            path = base / reference['path']
+            if path.name != 'spec-review-result.json':
+                continue
+            candidates.append((path, revision['parent_task_id'], reference['sha256'], True))
+    reports, inputs = [], []
+    def diagnostic(row, fields):
+        return {**{key: row[key] for key in fields},
+                'evidence': [{key: item[key] for key in ('path', 'quote')} for item in row['evidence']]}
+    for path, owner, expected_hash, historical in candidates:
+        report = load(path, owner, expected_hash, historical)
+        if report is None:
+            continue
+        gaps = {field: [diagnostic(row, ('id', 'verdict', 'reason')) for row in report[field]
+                        if row['verdict'] in {'gap', 'uncertain'}]
+                for field in ('requirement_coverage', 'clarification_coverage', 'acceptance')}
+        findings = [diagnostic(row, ('id', 'severity', 'description')) for row in report['findings']]
+        if not any(gaps.values()) and not findings:
+            continue
+        inputs.append({'path': str(path), 'sha256': hashlib.sha256(read(path)).hexdigest()})
+        reports.append({'originating_task_id': owner, 'gaps': gaps, 'findings': findings})
+    if protected is not None:
+        protected.update(buffers)
+    if not reports:
+        return None
+    return {'schema': 'factory-local/spec-review-feedback/1', 'task_id': attempt.task_id,
+            'attempt_id': attempt.id, 'request_sha256': attempt.request_sha256,
+            'role': 'diagnostic-only; not business authority or inherited approval',
+            'inputs': inputs, 'reports': reports}
+
+
 def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int,
                     config: dict[str, object]) -> subprocess.CompletedProcess[str]:
     """Keep runner-owned inputs in memory across the untrusted model call.
@@ -1392,6 +1600,12 @@ def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int
     for name in ("requirement-input.json", "spec-input.json", "spec-review-input.json"):
         if (task / name).is_file():
             paths.append(task / name)
+    if stage != 'requirement' and (task/'requirement-source-snapshot.json').is_file():
+        for row in object_file(task/'requirement-contract.json')['observations']:
+            if row['kind'] == 'source':
+                paths.append(_requirement_source(task, attempt.request, row['source']['path'], historical=True))
+        receipt = object_file(task/'stage-receipts.json')['requirement']
+        paths.append(Path(receipt['artifact_dir'])/'requirement-source-snapshot.json')
     if stage == 'implement':
         paths.extend(task / name for name in ('spec.md', 'spec-contract.json', 'worktree-baseline.json')
                      if (task / name).is_file())
@@ -1400,6 +1614,17 @@ def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int
     if stage == 'implement':
         paths.extend(p for p in (attempt.directory / 'implementation-before').rglob('*') if p.is_file())
     retained = {path: path.read_bytes() if path.is_file() else None for path in paths}
+    if stage == 'spec':
+        revision = object_file(task/'revision.json') if (task/'revision.json').is_file() else {}
+        if revision.get('required_verification'):
+            prompt += ('\n关联修订必须保留以下必验 ID、类型和环境，所有结果重新从 NOT_RUN 开始，不继承通过状态：'
+                       + json.dumps(revision['required_verification'], ensure_ascii=False) + '\n')
+        feedback = spec_review_feedback(attempt, retained)
+        if feedback:
+            feedback_path = attempt.directory / 'spec-review-feedback.json'
+            write_json(feedback_path, feedback)
+            retained[feedback_path] = feedback_path.read_bytes()
+            prompt += '\n运行器提供的历史技术审查反馈（不是新增业务授权或旧通过状态）：' + str(feedback_path) + '\n'
     docs_path = capture_docs_context(stage, config) if stage != 'review' else None
     if docs_path:
         retained[docs_path] = docs_path.read_bytes()
@@ -1832,7 +2057,7 @@ def _routing_text(text: str) -> str:
     return "".join(lines)
 
 
-def intent_decisions(text: str, pattern: str) -> list[dict[str, object]]:
+def intent_decisions(text: str, pattern: str, *, subject_absence: bool = False) -> list[dict[str, object]]:
     """Literal occurrences plus bounded, inspectable clause-negation decisions.
 
     Negation spans a whole clause/list, not a fixed character window. Contrast and
@@ -1842,10 +2067,16 @@ def intent_decisions(text: str, pattern: str) -> list[dict[str, object]]:
     """
     visible = _routing_text(text)
     negate = (r"不要|不需要|不允许|不应该|不必|不用|不准|不得|不能|无需|无须|禁止|勿|别|"
-              r"不(?:做|进行|执行|启动|使用|采用|调用|提交|推送|创建|发起|触发|运行|部署|发布|合并|生成|设计|修改|改|写)|"
+              r"不(?:做|进行|执行|启动|使用|采用|调用|提交|推送|创建|发起|触发|运行|部署|发布|合并|生成|声明|设计|修改|改|写)|"
               r"\b(?:do\s+not|don't|must\s+not|should\s+not|never|not|no)\b")
+    if subject_absence:
+        # Noun routing differs from action authorization: "不涉及后端" and
+        # "后端不改" exclude a domain, but must not suppress a later push action.
+        negate += r"|不涉及|不包含|不存在|不是|并非|不开发|不实现|不改"
     affirmative = (r"^\s*(?:[-*]\s*)?(?:请(?!求)|需要|允许|要求|务必|仅|只(?!读)|最后|然后|随后|"
                    r"(?:修复|验证|检查|完成|通过)[^，,。.!！？?；;\n]*?后|\b(?:please|only|then|finally)\b)")
+    if subject_absence:
+        affirmative = (r"^\s*(?:[-*]\s*)?(?:开发|实现|新增|修改|修复|调整|接入|重构|按照|使用|是)|" + affirmative)
     separators = r"([，,。.!！？?；;\n]|但是|不过|然而|而是|但|并(?:且)?请|并在|\bbut\b|\bhowever\b|\binstead\b)"
     decisions = []
     offset, carry = 0, False
@@ -1853,7 +2084,7 @@ def intent_decisions(text: str, pattern: str) -> list[dict[str, object]]:
         if not piece:
             continue
         if re.fullmatch(separators, piece, re.I):
-            if piece not in {",", "，"}:
+            if subject_absence or piece not in {",", "，"}:
                 carry = False
             offset += len(piece)
             continue
@@ -1869,6 +2100,10 @@ def intent_decisions(text: str, pattern: str) -> list[dict[str, object]]:
             postfix = piece[match.end():]
             absent_after = bool(re.match(
                 r"\s*(?:(?:设计稿|原型|证据|文档|技能)\s*)*(?:尚未提供|未提供|不存在|缺失|不在(?:本轮|本次).*范围|先不做|不执行|不需要|[:：=]\s*NOT_RUN)", postfix, re.I))
+            if subject_absence:
+                absent_after = absent_after or bool(re.match(
+                    r"\s*(?:(?:接口|服务|需求|页面|设计稿|原型)\s*)*(?:不改|不修改|不开发|不实现|不涉及|不包含|无需修改)",
+                    postfix, re.I))
             negative = weak_negative or absent_after or last_negative > last_positive
             denied = negative or (carry and last_positive < 0)
             decisions.append({"text": text[offset + match.start():offset + match.end()],
@@ -1926,18 +2161,30 @@ def _load_skill_routing(path: Path) -> dict:
 
 def classify(request: Path, task: Path) -> dict[str, object]:
     text = request.read_text(encoding="utf-8")
-    frontend = bool(re.search(r"前端|页面|组件|Vue|React|CSS|交互|浏览器|Figma|设计稿|原型", text, re.I))
-    backend = bool(
-        re.search(r"后端|服务端|数据库|SQL|Controller|Service层|Spring|Java|Go|MQ|缓存", text, re.I)
-    )
-    design_urls = re.findall(r"https?://[^\s)]+(?:figma\.com|\.figma\.)[^\s)]*", text, re.I)
+    frontend_decisions = intent_decisions(text, r"前端|页面|组件|Vue|React|CSS|交互|浏览器|Figma|设计稿|原型", subject_absence=True)
+    backend_pattern = r"后端|服务端|数据库|SQL|Controller|Service层|Spring|(?<![A-Za-z])Java(?![A-Za-z])|\bGo\b|MQ|Redis"
+    backend_decisions = intent_decisions(text, backend_pattern, subject_absence=True)
+    design_decisions = intent_decisions(text, r"Figma|设计稿|原型|视觉还原|截图", subject_absence=True)
+    frontend = any(item['decision'] == 'affirmed' for item in frontend_decisions)
+    backend = any(item['decision'] == 'affirmed' for item in backend_decisions)
+    backend_context_only = False
+    if frontend and backend and any(item['decision'] == 'negated' for item in backend_decisions):
+        # An existing backend may only explain a UI error state. An explicit
+        # exclusion wins over that context unless a separate backend change is requested.
+        action = r'(?:开发|实现|新增|修改|修复|调整|接入|重构)'
+        domain = '(?:' + backend_pattern + ')'
+        clause = r'[^，,。.!！？?；;\n]*?'
+        changes = intent_decisions(text, action + clause + domain + '|' + domain + clause + action, subject_absence=True)
+        backend_context_only = not any(item['decision'] == 'affirmed' for item in changes)
+        backend = not backend_context_only
+    design_urls = _affirmed_intents(text, r"https?://[^\s)]+(?:figma\.com|\.figma\.)[^\s)]*")
     design_files = [
         str(p.relative_to(task))
         for p in task.rglob("*")
         if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".pdf"}
         and p.relative_to(task).parts[0] != "attempts"
     ]
-    design_words = bool(re.search(r"Figma|设计稿|原型|视觉还原|截图", text, re.I))
+    design_words = any(item['decision'] == 'affirmed' for item in design_decisions)
     mode = execution_mode_for(text)
     analysis_only = mode == "analysis"
     if frontend and backend:
@@ -1966,7 +2213,7 @@ def classify(request: Path, task: Path) -> dict[str, object]:
         if Path(path).name != request.name
         and re.search(r"api|openapi|swagger|apifox|postman|接口|协议|contract", Path(path).name, re.I)
     ]
-    api_doc_words = bool(re.search(r"接口文档|API 文档|API文档|OpenAPI|Swagger|Apifox|Postman", text, re.I))
+    api_doc_words = bool(_affirmed_intents(text, r"接口文档|API 文档|API文档|OpenAPI|Swagger|Apifox|Postman"))
     has_api_doc = bool(api_doc_urls or api_doc_paths or api_doc_words)
 
     browser_keywords = bool(re.search(r"浏览器|页面验收|UI验收|视觉验收|交互验收|截图|响应式|适配", text, re.I))
@@ -2018,6 +2265,9 @@ def classify(request: Path, task: Path) -> dict[str, object]:
         "evidence": {
             "frontend_keywords": frontend,
             "backend_keywords": backend,
+            "backend_context_only": backend_context_only,
+            "domain_intent_decisions": {"frontend": frontend_decisions, "backend": backend_decisions},
+            "design_intent_decisions": design_decisions,
             "design_words": design_words,
             "api_doc_words": api_doc_words,
             "browser_keywords": browser_keywords,
@@ -2396,7 +2646,7 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
         )
         required(requirement)
         required(task / "requirement-contract.json")
-        validate_requirement(task, request)
+        validate_requirement(task, request, freeze_sources=True)
         append_event(events, "requirement", "completed", artifact=str(requirement), content_validation="passed")
 
     if start <= stages.index('clarification') <= end:
@@ -2472,7 +2722,7 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
     if start <= stages.index('implement') <= end:
         append_event(events, 'implement', 'started')
         validate_requirement(task, request, check_source=False)
-        validate_spec(task, request, config)
+        validate_spec(task, request, config, check_source=False)
         contract = json.loads((task / "spec-contract.json").read_text())
         require_current_spec_review(task, request, contract)
         check_preflight(args, task, request, contract, config, commands=False)
@@ -2487,6 +2737,10 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
         baseline_state = json.loads(content_baseline.read_text())
         if baseline_state.get("schema") != "factory-local/worktree-baseline/1":
             raise ValueError("Factory 内容基线无效")
+        frozen_baseline = baseline_state['snapshot']
+        if hashlib.sha256(json.dumps(frozen_baseline, sort_keys=True, separators=(',', ':')).encode()).hexdigest() != contract['source_sha256']:
+            raise ValueError('实施任务基线与 Spec 源码绑定不一致，须建立关联修订')
+        enforce_scope(task, contract, changed_files(frozen_baseline, worktree_snapshot(ROOT)))
         implementation_before = worktree_snapshot(ROOT)
         content_before = capture_implementation_before(task, contract['scope']['allowed_files'], implementation_before)
         if classification.get("has_design") and classification.get("scope") in {"frontend", "fullstack"}:

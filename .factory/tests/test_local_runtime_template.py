@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ import pytest
 SOURCE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SOURCE / 'tests/local'))
 from support import prepare
+from test_acceptance import FactoryCase
 from runtime.local import runner as factory
 MODULE = SOURCE / 'templates/local/run.py'
 
@@ -28,9 +30,9 @@ def make_spec(factory, task):
     inputs = json.loads((task / "spec-input.json").read_text())
     (task / "spec.md").write_text(inputs["task_id"] + " AC-01 source.txt")
     factory.write_json(task / "spec-contract.json", {
-        **inputs, "schema": "factory-local/spec-contract/1", "goal": "fixture behavior",
+        **inputs, "schema": "factory-local/spec-contract/2", "goal": "fixture behavior",
         "scope": {"allowed_files": ["source.txt"], "non_goals": ["unrelated changes"]},
-        "acceptance": [{"id": "AC-01", "criterion": "observable behavior", "clarification_ids": ["CL-01"], "verification_ids": ["V-1"]}],
+        "acceptance": [{"id": "AC-01", "criterion": "observable behavior", "requirement_ids": ["RQ-1"], "clarification_ids": ["CL-1"], "verification_ids": ["V-1"]}],
         "verification": [{"id": "V-1", "kind": "command", "argv": ["python3", "-V"],
                           "required": True, "status": "NOT_RUN", "environment": "local"}],
         "external_requirements": [],
@@ -65,11 +67,15 @@ def runtime(tmp_path, monkeypatch):
                   generated_files=[], verification_commands=[{'id':'python', 'argv':['python3','-V']}],
                   preflight_commands=[{'id':'python', 'argv':[sys.executable,'--version'], 'minimum_version':[3,10,0]}])
     prepare(root, config)
+    factory.write_json(root / '.rules/skills/factory-routing.json', {
+        'schema': 'factory-local/skill-routing/1',
+        'skills': {name: {'explicit_only': True} for name in config['workflow_skills'].values()},
+    })
     config_path = root / "factory-test-config.json"
     config_path.write_text(json.dumps(config))
     original_load = factory.load_local_factory_config
     monkeypatch.setattr(factory, "load_local_factory_config", lambda: original_load(config_path))
-    monkeypatch.setattr(factory, "AWESOME_RULES_ROOT", tmp_path / "absent-rules")
+    monkeypatch.setattr(factory, "AWESOME_RULES_ROOT", root / ".rules")
     request = tmp_path / "request.md"
     request.write_text("修复 Vue 页面按钮样式")
     task = root / "artifacts/factory-local/runtime"
@@ -87,16 +93,20 @@ def runtime(tmp_path, monkeypatch):
                     (attempt.directory / log.name).write_text("Codex is at capacity turn_rate_limit_exceeded")
                 return subprocess.CompletedProcess(cmd, 1, "turn_rate_limit_exceeded", "")
             if stage == 'clarification':
-                (task / 'clarification-contract.json').write_text(json.dumps({
-                    'schema':'factory-local/clarification/2', 'workflow_version':factory.WORKFLOW_VERSION,
-                    'task_id':factory.task_identity(task), 'request_sha256':factory.digest(request),
-                    'requirement_sha256':factory.digest(task / 'requirement.md'), 'answers_sha256':None,
-                    'business_sources_sha256':factory.digest(task / 'business-sources.snapshot.json'),
-                    'rules':[{'id':'CL-01','given':'current behavior','when':'request is applied',
-                              'then':'observable behavior','forbidden':'no extra changes',
-                              'source':{'kind':'request','quote':request.read_text()}}],
-                    'open_questions':[], 'assumptions':[], 'source_conflicts':[]}))
+                FactoryCase.clarify(SimpleNamespace(config=config), task, request)
                 return subprocess.CompletedProcess(cmd, 0, '', '')
+            if stage == 'requirement' and behavior['skip_output'] != stage:
+                FactoryCase.requirement(None, task, request)
+                return subprocess.CompletedProcess(cmd, 0, '', '')
+            if stage == 'spec-review':
+                expected = json.loads((task/'spec-review-input.json').read_text())
+                expected.pop('context'); expected.pop('manifest')
+                proof = [{'path': 'request.md', 'quote': request.read_text()}]
+                expected.update(schema='factory-local/spec-review-result/1',
+                    requirement_coverage=[{'id': 'RQ-1', 'verdict': 'covered', 'reason': 'Original fixture request', 'evidence': proof}],
+                    clarification_coverage=[{'id': 'CL-1', 'verdict': 'covered', 'reason': 'Confirmed fixture request', 'evidence': proof}],
+                    acceptance=[{'id': 'AC-01', 'verdict': 'covered', 'reason': 'Observable fixture request', 'evidence': proof}], findings=[])
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(expected), '')
             if stage == 'review':
                 expected = json.loads((task / 'review-input.json').read_text())
                 context = Path(expected['context'])

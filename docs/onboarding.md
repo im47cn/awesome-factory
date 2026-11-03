@@ -35,6 +35,8 @@ python3 .factory/run.py --task first-pilot --request-file /path/to/request.md --
 
 接入检查仅证明程序、治理门和工具存在，不会自动调用模型、登录 Figma 或访问测试环境。模型认证、实际编码、UI/API 和业务验收保持 NOT_RUN，待真实试点需求验证。质量基线有问题须单独记录，不作为接入成功或业务完成的证明。
 
+文档自动读取与恢复漂移检查需显式配置：新仓在 init 时传 `--context-file <审核后的context-input.json>`，配置例见 [context-policy.example.json](../templates/local/context-policy.example.json)；只建立 docs 目录不会启用。初始化前验证并锁定 docs_context 与 business_sources，省略时收据明确记录未启用。团队接手已开发仓时，Bootstrap 使用 `check --check-mode project`，不再用初始示例页面的原始字节作为业务源码验收标准。完整步骤见首个前端用户指南。
+
 若提示缺少规则库：clone 到项目兄弟目录 awesome-rules，或设置 `AWESOME_RULES_ROOT`。若提示缺项目依赖：使用满足 package.json engines 的 Node/pnpm，执行 `pnpm install --frozen-lockfile`。若缺 OMP：安装并在交互终端登录；不要把凭证放入共享配置。
 
 ## 场景观别
