@@ -3,13 +3,13 @@ import hashlib
 import json
 from pathlib import Path
 
-STAGES = {'clarification', 'preflight', 'review'}
+STAGES = {'requirement', 'clarification', 'spec', 'spec-review', 'preflight', 'review'}
 
 
 def load(root: Path, rules: Path, config: dict) -> dict:
     mapping = config.get('workflow_skills')
     if not isinstance(mapping, dict) or set(mapping) != STAGES:
-        raise ValueError('workflow_skills 必须配置 clarification/preflight/review 三项公共能力')
+        raise ValueError('workflow_skills 必须配置 requirement/clarification/spec/spec-review/preflight/review 六项公共能力')
     lock = json.loads((root / '.factory/runtime-lock.json').read_text())
     pinned = lock.get('skills')
     if not isinstance(pinned, dict) or not pinned:

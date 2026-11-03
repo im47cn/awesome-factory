@@ -21,7 +21,7 @@ python3 /path/to/awesome-factory/tools/factory-local-setup.py init /path/to/fron
 python3 .factory/setup.py check .
 
 # 先生成需求和 Spec；task 是目录名，task_id 自动生成
-python3 .factory/run.py --task first-pilot --request-file /path/to/request.md --only-stage spec
+python3 .factory/run.py --task first-pilot --request-file /path/to/request.md --only-stage spec-review
 
 # 用户明确授权实施后，扩大上限并从下一阶段继续
 python3 .factory/run.py --task first-pilot --request-file /path/to/request.md --resume --authorize-through verify
@@ -182,4 +182,4 @@ bash .factory/downstream-check.sh --apply-commit
 `--apply` 追平 → `--check` 归零。详见
 [.factory/README.md §上游同步](../.factory/README.md)。
 
-公共本地十阶段工作流、三项 Skill 分层、项目薄适配与升级说明见 [shared-local-workflow](design/shared-local-workflow.md)。旧七阶段外部验收协议单独保留，不与原生流程快照混用。
+公共本地十一阶段工作流、六项方法 Skill 分层、项目薄适配与升级说明见 [shared-local-workflow](design/shared-local-workflow.md)。旧七阶段外部验收协议单独保留，不与原生流程快照混用。

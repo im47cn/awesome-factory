@@ -17,8 +17,14 @@ from runtime.local import runner
 def prepare(root, config):
     config['upstream_path'] = str(SOURCE)
     config['rules_path'] = '.rules'
-    config['workflow_skills'] = {'clarification': 'factory-clarification',
-        'preflight': 'factory-environment-preflight', 'review': 'factory-independent-review'}
+    config['workflow_skills'] = {
+        'requirement': 'factory-requirement-analysis',
+        'clarification': 'factory-clarification',
+        'spec': 'factory-spec-authoring',
+        'spec-review': 'factory-spec-review',
+        'preflight': 'factory-environment-preflight',
+        'review': 'factory-independent-review',
+    }
     rules = Path(os.environ.get('FACTORY_TEST_RULES_ROOT', str(SOURCE.parent / 'awesome-rules')))
     for name in config['workflow_skills'].values():
         target = root / '.rules/skills' / name
@@ -38,6 +44,6 @@ def prepare(root, config):
               for name in config['workflow_skills'].values()
               for p in (root / '.rules/skills' / name).rglob('*.md')}
     (root / '.factory/runtime-lock.json').write_text(json.dumps({
-        'api_version': 'factory-local/runtime/1', 'workflow_version':'factory-local/workflow/3',
+        'api_version': 'factory-local/runtime/1', 'workflow_version':'factory-local/workflow/4',
         'files': files, 'skills': skills,
         'test_files': {p.relative_to(SOURCE).as_posix(): module.sha(p) for p in module.test_inputs(SOURCE)}}))

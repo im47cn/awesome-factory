@@ -5,7 +5,7 @@
 将业务需求稳定地交给本地 Factory 完成：
 
 ```text
-需求分类 → 技能发现 → 设计/接口证据分析 → requirement → clarification → spec
+需求分类 → 技能发现 → 设计/接口证据分析 → requirement → clarification → spec → 独立 spec-review
 → AI 编写代码 → 本地验证 → 质量门禁 → 分支提交 → 远端交付
 ```
 
@@ -31,7 +31,7 @@ Factory 负责编排和状态推进，规则仓负责规范与门禁，浏览器
 - `factory-init` 自动识别 frontend/backend/fullstack。
 - `--mode local` 只安装本地链路需要的文件。
 - 生成 `factory-local.json`，明确 `remote_side_effects=false` 和 `auto_commit=false`。
-- 本地 runner 固定阶段：`classify → skill-discovery → design-analysis → requirement → clarification → spec → preflight → implement → review → verify`。
+- 本地 runner 固定阶段：`classify → skill-discovery → design-analysis → requirement → clarification → spec → spec-review → preflight → implement → review → verify`。
 - 每个阶段保存状态、收据、日志、退出码和恢复命令。
 
 完成标准：初始化 profile 回归测试通过；业务仓可以从 request 文件恢复到任一阶段；本地任务自动生成稳定 `task_id`，并绑定状态、阶段收据、日志和证据。
@@ -41,7 +41,7 @@ Factory 负责编排和状态推进，规则仓负责规范与门禁，浏览器
 在平台继续扩展前，选定一个真实的前端或全栈小需求作为样板，完整执行：
 
 ```text
-需求确认 → task_id → requirement → clarification → spec → AI 编码
+需求确认 → task_id → requirement → clarification → spec → 独立 spec-review → AI 编码
 → 增量质量门禁 → 独立审查 → Mock/API 验证 → 浏览器验收
 ```
 

@@ -53,7 +53,7 @@ from .business_sources import capture as capture_business_sources, CLARIFICATION
 from .worktree import snapshot as worktree_snapshot, changed_files, legacy_candidates, GeneratedTransaction
 from .acceptance import evidence_request, read_evidence, scope_result, summarize, trusted_commands
 from .revisions import create_revision, validate_revision
-from .workflow import (VERSION as WORKFLOW_VERSION, WorkflowPending, object_file,
+from .workflow import (VERSION as WORKFLOW_VERSION, WorkflowPending, object_file, rows, text,
                       validate_clarification, validate_ac_mapping, readiness_plan,
                       readiness_request, read_readiness, readiness_result,
                       review_input, validate_review, import_environment_evidence,
@@ -67,14 +67,16 @@ AWESOME_RULES_ROOT = Path(
 ).expanduser().resolve()
 SAFE_LOCAL_TOOLS = frozenset({"read", "write", "edit", "grep", "lsp"})
 STAGES = ["classify", "skill-discovery", "design-analysis", "requirement", "clarification",
-          "spec", "preflight", "implement", "review", "verify"]
+          "spec", "spec-review", "preflight", "implement", "review", "verify"]
 STAGE_OUTPUTS = {
     "classify": ["classification.json", "remote-handoff.json"],
     "skill-discovery": ["skill-selection.json", "skill-routing.snapshot.json"],
     "design-analysis": ["design-analysis.md", "design-orchestration.json", "design-contract.json", "visual-contract.json"],
-    "requirement": ["requirement.md", "stage-integrity.json"],
+    "requirement": ["requirement.md", "requirement-input.json", "requirement-contract.json",
+                    "requirement-validation.json", "stage-integrity.json"],
     "clarification": ["business-sources.snapshot.json", "clarification-contract.json", "clarification-result.json", "stage-integrity.json"],
     "spec": ["spec.md", "spec-input.json", "spec-contract.json", "spec-validation.json", "stage-integrity.json"],
+    "spec-review": ["spec-review-input.json", "spec-review-result.json", "stage-integrity.json"],
     "preflight": ["preflight-request.json", "preflight-result.json", "preflight-guide.json"],
     "implement": ["implement.md", "implemented-files.txt", "implement-changes.json", "scope-result.json", "stage-integrity.json"],
     "review": ["review-input.json", "review-result.json", "stage-integrity.json"],
@@ -130,7 +132,7 @@ def check_docs_context(task: Path, receipt: dict, config: dict) -> None:
         })
     if changes:
         raise ValueError("docs 引用资料已变化：" + json.dumps(changes, ensure_ascii=False)
-                         + "；请检查差异，再用 --from-stage requirement --only-stage spec 重新分析，不自动沿用旧 Spec")
+                         + "；请检查差异，再用 --from-stage requirement --only-stage spec-review 重新分析，不自动沿用旧 Spec")
 
 
 def capture_docs_context(stage: str, config: dict) -> Path | None:
@@ -184,10 +186,10 @@ def resolve_authorization(task: Path, request: Path, args: argparse.Namespace, p
             raise ValueError("授权记录无效或需求已变化；请使用新任务目录，不自动沿用授权")
     else:
         if previous and requested is None:
-            raise ValueError("旧任务缺少阶段授权记录；须显式指定 --authorize-through spec 并从 classify 重跑，不能直接恢复编码")
-        ceiling = args.only_stage or ("spec" if mode == "analysis" else "verify")
-        if mode == "analysis" and STAGES.index(ceiling) > STAGES.index("spec"):
-            ceiling = "spec"
+            raise ValueError("旧任务缺少阶段授权记录；须显式指定 --authorize-through spec-review 并从 classify 重跑，不能直接恢复编码")
+        ceiling = args.only_stage or ("spec-review" if mode == "analysis" else "verify")
+        if mode == "analysis" and STAGES.index(ceiling) > STAGES.index("spec-review"):
+            ceiling = "spec-review"
         auth = {"schema": "factory-local/authorization/1", "task_id": task_id,
                 "request_sha256": request_hash, "authorized_end_stage": ceiling, "grants": []}
     if requested is not None:
@@ -217,12 +219,162 @@ def business_sources(task: Path, request: Path, config: dict, *, freeze=False) -
     return current
 
 
+def requirement_input(task: Path, request: Path) -> dict:
+    return {
+        "schema": "factory-local/requirement-input/1",
+        "workflow_version": WORKFLOW_VERSION,
+        "task_id": task_identity(task),
+        "request_sha256": digest(request),
+        "source_sha256": source_digest(),
+        "classification_sha256": digest(task / "classification.json"),
+        "skill_selection_sha256": digest(task / "skill-selection.json"),
+        "design_contract_sha256": digest(task / "design-contract.json")
+        if (task / "design-contract.json").is_file() else None,
+    }
+
+
+def _requirement_source(task: Path, request: Path, name: str) -> Path:
+    task_sources = {
+        "request": request,
+        "classification.json": task / "classification.json",
+        "skill-selection.json": task / "skill-selection.json",
+        "design-analysis.md": task / "design-analysis.md",
+        "design-contract.json": task / "design-contract.json",
+        "visual-contract.json": task / "visual-contract.json",
+        "requirement-docs-context.json": task / "requirement-docs-context.json",
+    }
+    if name in task_sources:
+        path = task_sources[name]
+    else:
+        if not isinstance(name, str) or Path(name).is_absolute() or ".." in Path(name).parts or "\\" in name:
+            raise ValueError("需求证据路径非法")
+        path = (ROOT / name).resolve()
+        if not path.is_relative_to(ROOT.resolve()):
+            raise ValueError("需求证据路径越界")
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("需求证据缺失或为符号链接：" + name)
+    return path
+
+
+def validate_requirement(task: Path, request: Path, *, check_source: bool = True) -> dict:
+    errors, hashes = [], {}
+    try:
+        document = task / "requirement.md"
+        contract_path = task / "requirement-contract.json"
+        required(document)
+        inputs = object_file(task / "requirement-input.json")
+        contract = object_file(contract_path)
+        current = requirement_input(task, request)
+        if inputs.get("schema") != "factory-local/requirement-input/1":
+            raise ValueError("requirement-input.json schema 无效")
+        if contract.get("schema") != "factory-local/requirement-contract/1":
+            raise ValueError("requirement-contract.json schema 无效")
+        for key, value in current.items():
+            contract_value = contract.get(key) if key != "schema" else "factory-local/requirement-input/1"
+            if inputs.get(key) != value or contract_value != value:
+                errors.append(f"{key} 与当前需求分析输入不一致")
+        if not check_source:
+            errors = [item for item in errors if not item.startswith("source_sha256 ")]
+        text(contract.get("goal"), "requirement goal")
+        scope = contract.get("scope")
+        if not isinstance(scope, dict):
+            raise ValueError("requirement scope 必须是对象")
+        for key in ("in_scope", "non_goals"):
+            value = scope.get(key)
+            if not isinstance(value, list) or not value or not all(isinstance(item, str) and item.strip() for item in value):
+                errors.append(f"scope.{key} 必须是非空字符串数组")
+        observations = rows(contract.get("observations"), "requirement observations", nonempty=True)
+        observation_ids = {row["id"] for row in observations}
+        for row in observations:
+            if row.get("kind") not in {"request", "source", "docs", "design", "api", "unknown"}:
+                errors.append(f"{row['id']}: observation.kind 无效")
+            text(row.get("statement"), f"{row['id']}.statement")
+            text(row.get("limitation"), f"{row['id']}.limitation")
+            source = row.get("source")
+            if not isinstance(source, dict):
+                errors.append(f"{row['id']}: source 必须是对象")
+                continue
+            name = text(source.get("path"), f"{row['id']}.source.path")
+            quote = text(source.get("quote"), f"{row['id']}.source.quote")
+            if quote not in _requirement_source(task, request, name).read_text(errors="replace"):
+                errors.append(f"{row['id']}: 证据引用未命中原文")
+        candidates = rows(contract.get("behavior_candidates"), "behavior candidates", nonempty=True)
+        candidate_ids = {row["id"] for row in candidates}
+        needs_clarification = set()
+        for row in candidates:
+            for key in ("given", "when", "then", "forbidden"):
+                text(row.get(key), f"{row['id']}.{key}")
+            refs = row.get("source_ids")
+            if not isinstance(refs, list) or not refs or not set(refs).issubset(observation_ids):
+                errors.append(f"{row['id']}: source_ids 未映射有效 observations")
+            if row.get("status") not in {"explicit", "needs-clarification"}:
+                errors.append(f"{row['id']}: status 无效")
+            elif row["status"] == "needs-clarification":
+                needs_clarification.add(row["id"])
+        questions = rows(contract.get("open_questions"), "requirement open questions")
+        covered_questions = set()
+        for row in questions:
+            text(row.get("question"), f"{row['id']}.question")
+            if type(row.get("affects_behavior")) is not bool:
+                errors.append(f"{row['id']}: affects_behavior 必须为布尔值")
+            refs = row.get("candidate_ids")
+            if not isinstance(refs, list) or not set(refs).issubset(candidate_ids):
+                errors.append(f"{row['id']}: candidate_ids 无效")
+            if row.get("affects_behavior"):
+                covered_questions.update(refs)
+        if needs_clarification - covered_questions:
+            errors.append("needs-clarification 行为候选缺少影响行为的开放问题")
+        selection = validate_selected_skills(task)
+        selected = {row["name"]: row["path"] for row in selection.get("selected", [])}
+        usages = rows(contract.get("skill_usage"), "skill usage")
+        if len(usages) != len(selected) or {row.get("name") for row in usages} != set(selected):
+            errors.append("skill_usage 必须覆盖且仅覆盖已选择 Skill")
+        for row in usages:
+            if row.get("path") != selected.get(row.get("name")):
+                errors.append(f"{row.get('id')}: Skill 路径与选择记录不一致")
+            text(row.get("reason"), f"{row.get('id')}.reason")
+            if (not isinstance(row.get("applied_rules"), list) or not row["applied_rules"]
+                    or not all(isinstance(item, str) and item.strip() for item in row["applied_rules"])):
+                errors.append(f"{row.get('id')}: applied_rules 必须为非空字符串数组")
+        acceptance = rows(contract.get("acceptance_candidates"), "acceptance candidates", nonempty=True)
+        accepted_behavior_ids = set()
+        for row in acceptance:
+            text(row.get("criterion"), f"{row['id']}.criterion")
+            text(row.get("verification_hint"), f"{row['id']}.verification_hint")
+            refs = row.get("behavior_ids")
+            if not isinstance(refs, list) or not refs or not set(refs).issubset(candidate_ids):
+                errors.append(f"{row['id']}: behavior_ids 无效")
+            else:
+                accepted_behavior_ids.update(refs)
+            if row.get("environment") not in {"local", "mock", "test-environment"}:
+                errors.append(f"{row['id']}: environment 无效")
+            if row.get("status") != "NOT_RUN":
+                errors.append(f"{row['id']}: 需求分析不能自报验收通过")
+        if accepted_behavior_ids != candidate_ids:
+            errors.append("acceptance_candidates 未覆盖全部行为候选")
+        body = document.read_text(encoding="utf-8")
+        if current["task_id"] not in body or not all(row["id"] in body for row in candidates):
+            errors.append("requirement.md 缺少 task_id 或行为候选 ID")
+        hashes = {"requirement_sha256": digest(document), "contract_sha256": digest(contract_path)}
+    except (OSError, ValueError, TypeError, KeyError, SystemExit) as exc:
+        errors.append(str(exc))
+    result = {"schema": "factory-local/requirement-validation/1", "task_id": task_identity(task),
+              "status": "blocked" if errors else "passed", "errors": errors, **hashes,
+              "boundary": "结构、来源和输入绑定校验；不代表业务候选已确认"}
+    write_json(task / "requirement-validation.json", result)
+    if errors:
+        raise ValueError("需求分析内容校验失败: " + "; ".join(errors))
+    return result
+
+
 def spec_input(task: Path, request: Path) -> dict:
-    return {"schema": "factory-local/spec-input/1", "task_id": task_identity(task),
+    return {"schema": "factory-local/spec-input/2", "task_id": task_identity(task),
             "request_sha256": digest(request), "requirement_sha256": digest(task / "requirement.md"),
+            "requirement_contract_sha256": digest(task / "requirement-contract.json"),
             "workflow_version": WORKFLOW_VERSION,
             "clarification_sha256": digest(task / 'clarification-contract.json'),
             "business_sources_sha256": digest(task / 'business-sources.snapshot.json'),
+            "skill_selection_sha256": digest(task / "skill-selection.json"),
             "source_sha256": source_digest()}
 
 
@@ -240,13 +392,15 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
         contract_path = task / "spec-contract.json"
         contract = json.loads(contract_path.read_text())
         inputs = json.loads((task / "spec-input.json").read_text())
-        if not isinstance(inputs, dict) or inputs.get("schema") != "factory-local/spec-input/1":
+        if not isinstance(inputs, dict) or inputs.get("schema") != "factory-local/spec-input/2":
             raise ValueError("spec-input.json 必须是有效输入对象")
         hashes = {"spec_sha256": digest(document), "contract_sha256": digest(contract_path)}
-        if not isinstance(contract, dict) or contract.get("schema") != "factory-local/spec-contract/1":
+        if not isinstance(contract, dict) or contract.get("schema") != "factory-local/spec-contract/2":
             raise ValueError("Spec 结构化清单 schema 无效")
         current = spec_input(task, request)
-        for key in ("workflow_version", "task_id", "request_sha256", "requirement_sha256", "clarification_sha256", "business_sources_sha256"):
+        for key in ("workflow_version", "task_id", "request_sha256", "requirement_sha256",
+                    "requirement_contract_sha256", "clarification_sha256", "business_sources_sha256",
+                    "skill_selection_sha256"):
             if contract.get(key) != current[key] or inputs.get(key) != current[key]:
                 errors.append(f"{key} 与当前任务/输入不一致")
         if contract.get("source_sha256") != inputs.get("source_sha256"):
@@ -312,6 +466,9 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
             else:
                 errors.append(f"{vid}: kind 无效")
         acceptance = contract.get("acceptance")
+        requirement_contract = object_file(task / "requirement-contract.json")
+        requirement_ids = {row["id"] for row in rows(
+            requirement_contract.get("behavior_candidates"), "behavior candidates", nonempty=True)}
         if (task / 'revision.json').is_file():
             validate_revision(ROOT, task)
             prior_required = json.loads((task / 'revision.json').read_text())['required_verification']
@@ -344,17 +501,38 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
                 errors.append(f"{cid}: 验收条件未映射有效验证方法")
             elif not set(refs) & required_verification_ids:
                 errors.append(f"{cid}: 至少需要一种必需验证方法，不能全部选做")
+            requirement_refs = item.get("requirement_ids")
+            if (not isinstance(requirement_refs, list) or not requirement_refs
+                    or not set(requirement_refs).issubset(requirement_ids)):
+                errors.append(f"{cid}: 未映射有效需求行为候选")
         external = contract.get("external_requirements")
         if not isinstance(external, list):
             errors.append("必须显式声明 external_requirements，可为空列表")
         else:
+            external_ids = set()
             for item in external:
                 if (not isinstance(item, dict) or not isinstance(item.get("description"), str)
                         or not item["description"].strip()
                         or item.get("status") not in {"PENDING", "AVAILABLE"}):
                     errors.append("外部待补项缺描述或状态")
+                    continue
+                external_id = item.get("id")
+                if (not isinstance(external_id, str) or not external_id.strip()
+                        or external_id in external_ids):
+                    errors.append("external_requirements.id 缺失或重复")
+                else:
+                    external_ids.add(external_id)
+                if item.get("environment") not in {"local", "mock", "test-environment"}:
+                    errors.append(f"{external_id}: external requirement environment 无效")
         if not errors:
             validate_ac_mapping(task, contract)
+            mapped_requirement_ids = {
+                requirement_id
+                for item in acceptance
+                for requirement_id in item.get("requirement_ids", [])
+            }
+            if mapped_requirement_ids != requirement_ids:
+                errors.append("Spec 遗漏需求行为候选: " + ", ".join(sorted(requirement_ids - mapped_requirement_ids)))
             readiness_plan(task, contract, 'all')
         if current["task_id"] not in text or not all(isinstance(f, str) and f in text for f in files):
             errors.append("Spec 正文缺少任务身份或修改文件范围")
@@ -367,6 +545,171 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
     if errors:
         raise ValueError("Spec 内容校验失败: " + "; ".join(errors))
     return result
+
+
+def spec_review_input(task: Path, request: Path, context_sha256: str, run_id: str) -> dict:
+    return {
+        "schema": "factory-local/spec-review-input/1",
+        "workflow_version": WORKFLOW_VERSION,
+        "task_id": task_identity(task),
+        "request_sha256": digest(request),
+        "requirement_sha256": digest(task / "requirement.md"),
+        "requirement_contract_sha256": digest(task / "requirement-contract.json"),
+        "clarification_sha256": digest(task / "clarification-contract.json"),
+        "spec_sha256": digest(task / "spec.md"),
+        "contract_sha256": digest(task / "spec-contract.json"),
+        "source_sha256": object_file(task / "spec-input.json")["source_sha256"],
+        "skill_selection_sha256": digest(task / "skill-selection.json"),
+        "context_sha256": context_sha256,
+        "review_run_id": run_id,
+    }
+
+
+def validate_spec_review(expected: dict, report: dict, context: Path,
+                         requirement_ids: list[str], clarification_ids: list[str],
+                         acceptance_ids: list[str]) -> dict:
+    if not isinstance(report, dict) or report.get("schema") != "factory-local/spec-review-result/1":
+        raise ValueError("Spec 独立审查报告 schema 无效")
+    if any(report.get(key) != value for key, value in expected.items() if key != "schema"):
+        raise ValueError("Spec 独立审查报告与当前输入版本不匹配")
+
+    def evidence(items, *, upstream=False):
+        if not isinstance(items, list) or not items:
+            raise ValueError("Spec 审查结论缺少证据")
+        upstream_found = False
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("Spec 审查证据结构无效")
+            name = text(item.get("path"), "spec review evidence path")
+            quote = text(item.get("quote"), "spec review evidence quote")
+            path = (context / name).resolve()
+            if (Path(name).is_absolute() or not path.is_relative_to(context.resolve())
+                    or not path.is_file() or quote not in path.read_text(errors="replace")):
+                raise ValueError("Spec 审查证据路径越界、缺失或引用不匹配")
+            if name in {"request.md", "requirement-contract.json", "clarification-contract.json",
+                        "business-sources.snapshot.json", "design-contract.json", "visual-contract.json"}:
+                upstream_found = True
+        if upstream and not upstream_found:
+            raise ValueError("covered 结论必须引用 Spec 上游真值，不能由 Spec 自证")
+
+    blockers = []
+    for field, expected_ids in (("requirement_coverage", requirement_ids),
+                                ("clarification_coverage", clarification_ids),
+                                ("acceptance", acceptance_ids)):
+        checks = rows(report.get(field), field, nonempty=True)
+        if {row["id"] for row in checks} != set(expected_ids):
+            raise ValueError(f"Spec 审查 {field} 未完整覆盖输入 ID")
+        for row in checks:
+            if row.get("verdict") not in {"covered", "gap", "uncertain"}:
+                raise ValueError("Spec 审查 verdict 无效")
+            text(row.get("reason"), "spec review reason")
+            evidence(row.get("evidence"), upstream=row.get("verdict") == "covered")
+            if row["verdict"] != "covered":
+                blockers.append(row["id"])
+    for finding in rows(report.get("findings"), "spec review findings"):
+        if finding.get("severity") not in {"critical", "high", "medium", "low"}:
+            raise ValueError("Spec 审查问题严重程度无效")
+        text(finding.get("description"), "spec review finding")
+        evidence(finding.get("evidence"))
+        if finding["severity"] in {"critical", "high"}:
+            blockers.append(finding["id"])
+    return {**report, "status": "pending" if blockers else "passed", "blockers": blockers,
+            "independence": "fresh-process-read-only-before-implementation",
+            "boundary": "独立静态 Spec 语义审查，不是人工批准或运行验收"}
+
+
+def independent_spec_review(args, task: Path, request: Path, contract: dict, config: dict) -> dict:
+    attempt = ACTIVE_ATTEMPT.get()
+    initial_source = source_digest()
+    context = attempt.directory / "spec-review-context"
+    context.mkdir()
+    sources = {
+        "request.md": request,
+        "requirement.md": task / "requirement.md",
+        "requirement-contract.json": task / "requirement-contract.json",
+        "clarification-contract.json": task / "clarification-contract.json",
+        "business-sources.snapshot.json": task / "business-sources.snapshot.json",
+        "spec.md": task / "spec.md",
+        "spec-contract.json": task / "spec-contract.json",
+        "skill-selection.json": task / "skill-selection.json",
+    }
+    for optional in ("design-contract.json", "visual-contract.json"):
+        if (task / optional).is_file():
+            sources[optional] = task / optional
+    for optional in ("requirement-docs-context.json", "spec-docs-context.json"):
+        if (task / optional).is_file():
+            sources[optional] = task / optional
+    for name, source in sources.items():
+        shutil.copy2(source, context / name)
+    selection = validate_selected_skills(task)
+    for row in selection.get("selected", []):
+        for relative, expected_hash in row["files"].items():
+            source = AWESOME_RULES_ROOT / relative
+            if digest(source) != expected_hash:
+                raise ValueError("创建 Spec 审查快照时领域 Skill 已变化：" + row["name"])
+            destination = context / "domain-skills" / Path(relative).relative_to("skills")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    for name, entry in worktree_snapshot(ROOT)["files"].items():
+        source = ROOT / name
+        if entry.get("kind") == "file" and source.is_file() and not source.is_symlink():
+            destination = context / "source" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    manifest = {path.relative_to(context).as_posix(): digest(path)
+                for path in context.rglob("*") if path.is_file()}
+    context_hash = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    if source_digest() != initial_source:
+        raise ValueError("创建 Spec 审查快照期间源码发生变化")
+    expected = spec_review_input(task, request, context_hash, uuid.uuid4().hex)
+    write_json(task / "spec-review-input.json", {**expected, "context": str(context), "manifest": manifest})
+    requirement_ids = [row["id"] for row in object_file(task / "requirement-contract.json")["behavior_candidates"]]
+    clarification_ids = [row["id"] for row in object_file(task / "clarification-contract.json")["rules"]]
+    acceptance_ids = [row["id"] for row in contract["acceptance"]]
+    prompt = f"""执行已加载的 factory-spec-review，只读且全新无会话。
+只读上下文目录：{context}。只输出一个 JSON，不修改任何文件。
+原样复制绑定字段：{json.dumps(expected, ensure_ascii=False)}。
+requirement_coverage 必须覆盖：{json.dumps(requirement_ids, ensure_ascii=False)}。
+clarification_coverage 必须覆盖：{json.dumps(clarification_ids, ensure_ascii=False)}。
+acceptance 必须覆盖：{json.dumps(acceptance_ids, ensure_ascii=False)}。
+每项填写 verdict/reason/evidence；findings 无问题写 []。不得由 Spec 自证需求真值。"""
+    process = run_model_stage("spec-review", prompt, task / "spec-review.log", args.model,
+                              args.stage_timeout, {**config, "_review_cwd": str(context)})
+    after = {path.relative_to(context).as_posix(): digest(path)
+             for path in context.rglob("*") if path.is_file()}
+    if after != manifest:
+        raise ValueError("Spec 独立审查改写了只读上下文")
+    try:
+        report = json.loads(process.stdout)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("Spec 独立审查未返回有效 JSON") from exc
+    result = validate_spec_review(expected, report, context, requirement_ids,
+                                  clarification_ids, acceptance_ids)
+    result.update(context=str(context), manifest=manifest)
+    write_json(task / "spec-review-result.json", result)
+    if result["status"] != "passed":
+        raise WorkflowPending("pending_spec_review", "Spec 独立审查存在阻断问题：" + ", ".join(result["blockers"]))
+    return result
+
+
+def require_current_spec_review(task: Path, request: Path, contract: dict) -> dict:
+    result = object_file(task / "spec-review-result.json")
+    context = Path(result.get("context", ""))
+    if (not context.is_absolute() or not context.is_dir()
+            or not context.resolve().is_relative_to((task / "attempts").resolve())):
+        raise ValueError("Spec 独立审查上下文缺失或越界")
+    manifest = {path.relative_to(context).as_posix(): digest(path)
+                for path in context.rglob("*") if path.is_file()}
+    context_hash = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    expected = spec_review_input(task, request, context_hash, result.get("review_run_id"))
+    requirement_ids = [row["id"] for row in object_file(task / "requirement-contract.json")["behavior_candidates"]]
+    clarification_ids = [row["id"] for row in object_file(task / "clarification-contract.json")["rules"]]
+    acceptance_ids = [row["id"] for row in contract["acceptance"]]
+    checked = validate_spec_review(expected, result, context, requirement_ids,
+                                   clarification_ids, acceptance_ids)
+    if checked["status"] != "passed":
+        raise WorkflowPending("pending_spec_review", "Spec 独立审查尚未通过")
+    return checked
 
 
 def task_identity(task: Path) -> str:
@@ -946,13 +1289,13 @@ def build_omp_command(
     model: str,
     config: dict[str, object],
 ) -> list[str]:
-    tools = ['read', 'grep'] if stage == 'review' else local_allowed_tools(config)
+    tools = ['read', 'grep'] if stage in {'spec-review', 'review'} else local_allowed_tools(config)
     return [
         "omp",
         "--print",
         "--no-session",
         "--cwd",
-        config.get('_review_cwd', str(ROOT)) if stage == 'review' else str(ROOT),
+        config.get('_review_cwd', str(ROOT)) if stage in {'spec-review', 'review'} else str(ROOT),
         "--model",
         model,
         "--thinking",
@@ -996,8 +1339,9 @@ def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int
                                          'execution-policy.json', 'environment-evidence.json', 'business-sources.snapshot.json'))
     for prior in STAGES[:STAGES.index(stage)]:
         paths.extend(task / name for name in STAGE_OUTPUTS[prior] if (task / name).is_file())
-    if (task / "spec-input.json").is_file():
-        paths.append(task / "spec-input.json")
+    for name in ("requirement-input.json", "spec-input.json", "spec-review-input.json"):
+        if (task / name).is_file():
+            paths.append(task / name)
     if stage == 'implement':
         paths.extend(task / name for name in ('spec.md', 'spec-contract.json', 'worktree-baseline.json')
                      if (task / name).is_file())
@@ -1021,6 +1365,7 @@ def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int
         errors = []
         try:
             verify_code(ROOT, config)
+            validate_selected_skills(task)
             if skill_binding(stage_skills(config)) != skill_binding(capabilities):
                 errors.append('模型运行期间公共 Skill 发生变化')
         except (OSError, ValueError) as exc:
@@ -1080,6 +1425,56 @@ def _skill_frontmatter(path: Path) -> tuple[str, str]:
     return skill_name, description_text
 
 
+def _selected_skill_manifest(name: str, skill_file: Path) -> dict[str, str]:
+    folder = skill_file.parent
+    ignored_parts = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"}
+    ignored_names = {".DS_Store"}
+    paths = sorted(
+        path for path in folder.rglob("*")
+        if path.is_file()
+        and not any(part in ignored_parts for part in path.relative_to(folder).parts)
+        and path.name not in ignored_names
+        and path.suffix != ".pyc"
+    )
+    if skill_file not in paths:
+        raise ValueError("领域 Skill 缺少 SKILL.md：" + str(skill_file))
+    manifest = {}
+    for path in paths:
+        resolved = path.resolve()
+        if (path.is_symlink() or not resolved.is_relative_to(AWESOME_RULES_ROOT)
+                or not resolved.is_relative_to(folder.resolve())):
+            raise ValueError("领域 Skill 文件缺失、为符号链接或越界：" + str(path))
+        relative = resolved.relative_to(AWESOME_RULES_ROOT).as_posix()
+        if not relative.startswith(f"skills/{name}/"):
+            raise ValueError("领域 Skill 文件路径与名称不一致：" + relative)
+        manifest[relative] = digest(resolved)
+    return manifest
+
+
+def validate_selected_skills(task: Path) -> dict:
+    selection = object_file(task / "skill-selection.json")
+    if selection.get("schema") != "factory-local/skill-selection/2" or selection.get("status") != "passed":
+        raise ValueError("skill-selection.json 不可用")
+    selected = selection.get("selected")
+    if not isinstance(selected, list):
+        raise ValueError("skill-selection.selected 必须是数组")
+    seen = set()
+    for row in selected:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+            raise ValueError("已选领域 Skill 记录无效")
+        if row["name"] in seen:
+            raise ValueError("已选领域 Skill 名称重复：" + row["name"])
+        seen.add(row["name"])
+        expected = row.get("files")
+        skill_file = Path(row.get("path", ""))
+        if not isinstance(expected, dict) or not expected:
+            raise ValueError("已选领域 Skill 缺少内容摘要，须从 skill-discovery 重跑")
+        current = _selected_skill_manifest(row["name"], skill_file)
+        if current != expected:
+            raise ValueError("已选领域 Skill 内容已变化，须从 skill-discovery 重跑：" + row["name"])
+    return selection
+
+
 def discover_skills(request: Path, classification: dict[str, object], task: Path) -> tuple[str, str]:
     """Scan awesome-rules and persist the skill selection before AI stages run."""
     output = task / "skill-selection.json"
@@ -1137,7 +1532,7 @@ def discover_skills(request: Path, classification: dict[str, object], task: Path
                      "selection_reasons": reasons, "decisions": decisions}
             scanned.append(entry)
             if reasons:
-                selected.append(entry)
+                selected.append({**entry, "files": _selected_skill_manifest(name, skill_file)})
         payload = {
             "schema": "factory-local/skill-selection/2", "status": "passed",
             "source": str(skills_root), "scanned": scanned, "selected": selected,
@@ -1920,6 +2315,8 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
         and not (task / "skill-selection.json").is_file()
     ):
         raise SystemExit("任务被阻断：进入需求分析或后续阶段前必须存在 skill-selection.json")
+    if start >= 3:
+        validate_selected_skills(task)
 
     if (
         start >= 3
@@ -1930,22 +2327,23 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
         raise SystemExit("设计驱动任务被阻断：进入后续阶段前必须存在 design-contract.json 和 visual-contract.json")
 
     if start <= stages.index('requirement') <= end:
+        write_json(task / "requirement-input.json", requirement_input(task, request))
         append_event(events, "requirement", "started")
         run_model_stage(
             "requirement",
-            f"""你是本地 Factory 的需求分析节点。仓库：{ROOT}
-先读取 {skill_selection}，再打开其中 selected 列出的每个 SKILL.md 及其引用规则；把实际采用的技能、规则路径和理由写入 {requirement}。没有命中技能也要记录已扫描。
-读取需求文件 {request}、相关源码、设计稿证据和接口文档。
-读取分类结果 {classification_path}；如果存在 {design_analysis} 也一并读取。
-将已观察事实、推断、范围、非目标、验收条件写入 {requirement}。
-不要修改业务代码、治理文件或 package 配置。完成后只报告文件路径。""",
+            f"""执行已加载的 factory-requirement-analysis。
+运行器输入：{task / 'requirement-input.json'}；原始需求：{request}；分类：{classification_path}；技能选择：{skill_selection}。
+若存在设计分析则读取：{design_analysis}。按 Skill 协议只生成 {requirement} 和 {task / 'requirement-contract.json'}。
+逐字复制 requirement-input 绑定；不要修改业务代码、治理文件、答复或后续阶段产物。""",
             task / "requirement.log",
             args.model,
             args.stage_timeout,
             config,
         )
         required(requirement)
-        append_event(events, "requirement", "completed", artifact=str(requirement))
+        required(task / "requirement-contract.json")
+        validate_requirement(task, request)
+        append_event(events, "requirement", "completed", artifact=str(requirement), content_validation="passed")
 
     if start <= stages.index('clarification') <= end:
         append_event(events, 'clarification', 'started')
@@ -1953,23 +2351,17 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
         clarity_binding = {'schema': CLARIFICATION, 'workflow_version': WORKFLOW_VERSION,
                            'task_id': task_identity(task), 'request_sha256': digest(request),
                            'requirement_sha256': digest(requirement),
+                           'requirement_contract_sha256': digest(task / 'requirement-contract.json'),
                            'business_sources_sha256': digest(task / 'business-sources.snapshot.json'),
                            'answers_sha256': digest(task / 'clarification-answers.json')
                            if (task / 'clarification-answers.json').is_file() else None}
-        run_model_stage('clarification', f"""你是需求澄清检查节点，不是实现或业务决策者。
-运行在公共 Skill 的 Factory 节点模式，只写指定 JSON，不递归调用运行器。
-读取原始需求 {request}、需求分析 {requirement} 和已有显式答复 {task / 'clarification-answers.json'}（若存在）。
-输出 {task / 'clarification-contract.json'}；方法来自已加载的公共 Skill。
-运行器冻结的业务来源：{json.dumps(frozen_sources, ensure_ascii=False)}。仅 active normative 的已登记来源可作既有约束，源码不提供期望规则。
-原样复制绑定字段 {json.dumps(clarity_binding, ensure_ascii=False)}。
-rules 至少一条，每条 {{"id":"CL-01","given":"前提","when":"操作","then":"可观察结果","forbidden":"需求禁止的副作用；无明确额外禁止则写无额外约束",
-"source":{{"kind":"request","quote":"原始需求中的精确引用"}}}}；显式答复用 kind=confirmation、answer_id 和 decision 中精确引用。
-open_questions=[{{"id":"Q-01","question":"需要用户决定的具体问题","blocking":true}}]，已明确则 []。
-assumptions=[{{"id":"AS-01","statement":"假设","affects_behavior":true,"confirmed_by":null}}]，无假设则 []。confirmed_by 未确认必须为 JSON null，有真实操作者答复时才能填对应答复 ID。
-rules 的 id/given/when/then/forbidden 必须是非空字符串（forbidden 不是数组，无额外约束时填“无额外约束”），source 是对象；只写确定规则，全部待决定时 rules 可为 [] 并保持待澄清。
-source_conflicts 必须为数组；来源冲突写 id/description/source_ids/question_id，并关联 blocking=true 的问题。无冲突写 []。
-引用 project-rule 时 source 含 source_id/source_sha256/source_version/quote，规则 intent=preserve 且 targets 为适用范围内的具体文件。不能借规范授权新行为。
-把已确认的行为假设同时转为引用该答复的规则。只能写该 JSON 产物，不修改代码、需求、治理配置或答复。""",
+        source_index = [{key: row[key] for key in ('id', 'path', 'version', 'scope_paths')}
+                        for row in frozen_sources.get('sources', [])]
+        run_model_stage('clarification', f"""执行已加载的 factory-clarification，使用 Factory 节点模式。
+读取原始需求 {request}、已校验需求契约 {task / 'requirement-contract.json'}、人读分析 {requirement}、已有显式答复 {task / 'clarification-answers.json'}（若存在）和冻结业务来源 {task / 'business-sources.snapshot.json'}。
+按 Skill 协议只生成 {task / 'clarification-contract.json'}，schema={CLARIFICATION}；原样复制绑定字段 {json.dumps(clarity_binding, ensure_ascii=False)}。
+逐项解析 requirement behavior_candidates；可引用来源索引：{json.dumps(source_index, ensure_ascii=False)}，正文只从冻结快照读取。
+不要修改代码、需求分析、治理配置、答复或后续阶段产物。""",
                         task / 'clarification.log', args.model, args.stage_timeout, config)
         business_sources(task, request, config)
         clarity = validate_clarification(task, request, task_identity(task))
@@ -1992,21 +2384,11 @@ source_conflicts 必须为数组；来源冲突写 id/description/source_ids/que
         append_event(events, "spec", "started")
         run_model_stage(
             "spec",
-            f"""你是本地 Factory 的规格节点。读取 {requirement}、{skill_selection}、分类结果 {classification_path}、接口文档和当前源码。
-复核 skill-selection.json 中已命中的 SKILL.md，Spec 必须遵守技能给出的输入、产物和验收边界，不得自行替代技能职责。
-如果存在 {design_analysis}，必须将视觉约束、设计证据和视觉验收命令写入 Spec。
-将可执行的页面、数据、接口、错误、状态和验收规则写入 {spec}。
-Spec 必须包含明确的文件落点和可机械验证命令。不要修改业务代码或治理文件。
-同时生成 {task / 'spec-contract.json'}，schema=factory-local/spec-contract/1；从 {task / 'spec-input.json'} 原样复制 workflow_version、task_id、request_sha256、requirement_sha256、source_sha256、clarification_sha256、business_sources_sha256。
-读取 {task / 'clarification-contract.json'}：所有已澄清规则必须覆盖，每条 acceptance 增加 clarification_ids:["CL-01"]，不得从实现自行生成验收真值。
-清单必填：goal；scope={{"allowed_files":[项目内相对文件路径],"non_goals":[非目标]}}；
-acceptance=[{{"id":"AC-01","criterion":"可观察条件","verification_ids":["V-01"]}}]；
-verification=[{{"id":"V-01","kind":"command","argv":["pnpm","test"],"environment":"local","required":true,"status":"NOT_RUN"}}]，
-人工验证 kind=manual 时用 steps 字符串数组替代 argv，environment 可为 local/mock/test-environment。
-external_requirements=[{{"id":"唯一资源编号","environment":"local|mock|test-environment","description":"待补环境或账号","status":"PENDING"}}]，确无待补项则显式填空数组。AVAILABLE 仅是声明，运行器仍检查环境证据。
-Spec 正文必须包含 task_id、每个 AC ID 和 allowed_files。不得自报测试 PASSED，不得修改 spec-input.json 或 authorization.json。
-命令 argv 必须原样选择维护者的可信配置，不能自行拼接执行命令：{json.dumps([item['argv'] for item in trusted_commands(config).values()], ensure_ascii=False)}。
-若存在 {task / 'revision.json'}，读取 required_verification，保留父任务所有必验编号、类型、环境及 required:true；重新验证，不继承通过。""",
+            f"""执行已加载的 factory-spec-authoring。
+读取 {task / 'spec-input.json'}、{task / 'requirement-contract.json'}、{task / 'clarification-contract.json'}、{skill_selection} 和相关设计/接口契约。
+按 Skill 协议只生成 {spec} 与 {task / 'spec-contract.json'}，schema=factory-local/spec-contract/2；逐字复制 spec-input 的全部绑定。
+命令 argv 只能原样选择维护者可信清单：{json.dumps([item['argv'] for item in trusted_commands(config).values()], ensure_ascii=False)}。
+若存在 {task / 'revision.json'}，保留全部父任务必验义务并重新验证。不要修改源码、治理文件、spec-input 或授权。""",
             task / "spec.log",
             args.model,
             args.stage_timeout,
@@ -2016,17 +2398,29 @@ Spec 正文必须包含 task_id、每个 AC ID 和 allowed_files。不得自报�
         validate_spec(task, request, config)
         append_event(events, "spec", "completed", artifact=str(spec), content_validation="passed")
 
+    if start <= stages.index('spec-review') <= end:
+        append_event(events, "spec-review", "started")
+        validate_requirement(task, request)
+        validate_spec(task, request, config)
+        contract = object_file(task / "spec-contract.json")
+        independent_spec_review(args, task, request, contract, config)
+        append_event(events, "spec-review", "completed", artifact=str(task / "spec-review-result.json"))
+
     if start <= stages.index('preflight') <= end:
         append_event(events, 'preflight', 'started')
+        validate_requirement(task, request, check_source=False)
         validate_spec(task, request, config)
         contract = object_file(task / 'spec-contract.json')
+        require_current_spec_review(task, request, contract)
         check_preflight(args, task, request, contract, config)
         append_event(events, 'preflight', 'completed', artifact=str(task / 'preflight-result.json'))
 
     if start <= stages.index('implement') <= end:
         append_event(events, 'implement', 'started')
+        validate_requirement(task, request, check_source=False)
         validate_spec(task, request, config)
         contract = json.loads((task / "spec-contract.json").read_text())
+        require_current_spec_review(task, request, contract)
         check_preflight(args, task, request, contract, config, commands=False)
         if not content_baseline.exists():
             # Legacy filename-only data cannot distinguish edits to the same file.
@@ -2075,16 +2469,20 @@ Spec 正文必须包含 task_id、每个 AC ID 和 allowed_files。不得自报�
 
     if start <= stages.index('review') <= end:
         append_event(events, 'review', 'started')
+        validate_requirement(task, request, check_source=False)
         validate_spec(task, request, config, check_source=False)
         contract = object_file(task / 'spec-contract.json')
+        require_current_spec_review(task, request, contract)
         independent_review(args, task, request, contract, config)
         append_event(events, 'review', 'completed', artifact=str(task / 'review-result.json'))
 
     if start <= stages.index('verify') <= end:
         append_event(events, "verify", "started")
         capture_docs_context("verify", config)
+        validate_requirement(task, request, check_source=False)
         validate_spec(task, request, config, check_source=False)
         contract = json.loads((task / 'spec-contract.json').read_text())
+        require_current_spec_review(task, request, contract)
         require_current_review(task, request, contract)
         preflight_result = check_preflight(args, task, request, contract, config, commands=False)
         verification_source = source_digest()
@@ -2158,6 +2556,7 @@ Spec 正文必须包含 task_id、每个 AC ID 和 allowed_files。不得自报�
             "functional_status": functional_status,
             "quality_status": "passed",
             "clarification_status": "passed",
+            "spec_review_status": "passed",
             "review_status": "passed",
             "preflight_status": preflight_result['status'],
             "acceptance_scope": preflight_result['acceptance_scope'],

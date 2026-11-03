@@ -35,6 +35,8 @@ class EvaluationTests(unittest.TestCase):
         self.candidate = {**evaluation.read(self.work / 'bindings.json'), 'rules':[{
             'id':'CL1','given':'列表有投递状态','when':'渲染按钮','then':'仅 DEAD 显示',
             'forbidden':'其他状态显示','source':{'kind':'request','quote':'只允许死信状态显示按钮。'}}],
+            'requirement_coverage':[{'id':'RC1','candidate_id':'RQ-1','resolution':'rule',
+                                     'rule_id':'CL1','question_id':None}],
             'open_questions':[], 'assumptions':[], 'source_conflicts':[]}
 
     def candidate_file(self):
@@ -119,6 +121,8 @@ class EvaluationTests(unittest.TestCase):
         shutil.rmtree(self.output)
         run = evaluation.prepare(self.pack, self.output)
         self.candidate = {**evaluation.read(self.work / 'bindings.json'), 'rules':[],
+            'requirement_coverage':[{'id':'RC1','candidate_id':'RQ-1','resolution':'question',
+                                     'rule_id':None,'question_id':'Q1'}],
             'open_questions':[{'id':'Q1','question':'请确认正式边界口径','blocking':True}],
             'assumptions':[],'source_conflicts':[]}
         row = {'schema':'factory-local/clarification-judgement/1', 'case_id':'H01',

@@ -14,7 +14,7 @@ import shutil
 from .acceptance import sha, read_evidence
 from .business_sources import CLARIFICATION, validate_snapshot, cited_rule
 
-VERSION = 'factory-local/workflow/3'
+VERSION = 'factory-local/workflow/4'
 
 
 class WorkflowPending(ValueError):
@@ -72,6 +72,7 @@ def validate_clarification(task: Path, request: Path, task_id: str) -> dict:
     data = object_file(task / 'clarification-contract.json')
     expected = {'schema': CLARIFICATION, **binding(task, request, task_id),
                 'requirement_sha256': sha(task / 'requirement.md'),
+                'requirement_contract_sha256': sha(task / 'requirement-contract.json'),
                 'business_sources_sha256': sha(task / 'business-sources.snapshot.json')}
     available = validate_snapshot(object_file(task / 'business-sources.snapshot.json'), binding(task, request, task_id))
     if any(data.get(key) != value for key, value in expected.items()):
@@ -104,6 +105,31 @@ def validate_clarification(task: Path, request: Path, task_id: str) -> dict:
     blockers = [] if rules else ['no-observable-rules']
     obligations = []
     questions = rows(data.get('open_questions'), 'open_questions')
+    requirement = object_file(task / 'requirement-contract.json')
+    candidates = {row['id']: row for row in rows(requirement.get('behavior_candidates'), 'behavior candidates', nonempty=True)}
+    coverage = rows(data.get('requirement_coverage'), 'requirement coverage', nonempty=True)
+    if len(coverage) != len(candidates) or {row.get('candidate_id') for row in coverage} != set(candidates):
+        raise ValueError('澄清必须逐项覆盖需求分析中的行为候选')
+    rule_ids = {row['id'] for row in rules}
+    question_ids = {row['id'] for row in questions}
+    for row in coverage:
+        candidate = candidates[row['candidate_id']]
+        if row.get('resolution') == 'rule':
+            rule_id = row.get('rule_id')
+            rule = next((item for item in rules if item['id'] == rule_id), None)
+            if not rule or row.get('question_id') is not None:
+                raise ValueError('requirement_coverage 的 rule 解析必须引用唯一澄清规则')
+            if (candidate.get('status') == 'needs-clarification'
+                    and rule.get('source', {}).get('kind') != 'confirmation'):
+                raise ValueError('待澄清行为没有真实答复时不能直接升级为确定规则')
+        elif row.get('resolution') == 'question':
+            question = next((item for item in questions if item['id'] == row.get('question_id')), None)
+            if not question or question.get('blocking') is not True or row.get('rule_id') is not None:
+                raise ValueError('requirement_coverage 的 question 解析必须引用有效问题')
+        else:
+            raise ValueError('requirement_coverage.resolution 无效')
+    if not rule_ids.issuperset({row.get('rule_id') for row in coverage if row.get('resolution') == 'rule'}):
+        raise ValueError('需求候选引用了未知澄清规则')
     conflicts = rows(data.get('source_conflicts'), 'source_conflicts')
     for conflict in conflicts:
         text(conflict.get('description'), 'source conflict description')

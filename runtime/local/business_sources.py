@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 
 POLICY = 'factory-local/business-source-policy/1'
 SNAPSHOT = 'factory-local/business-sources/1'
-CLARIFICATION = 'factory-local/clarification/2'
+CLARIFICATION = 'factory-local/clarification/3'
 
 
 def sha(data: bytes) -> str:

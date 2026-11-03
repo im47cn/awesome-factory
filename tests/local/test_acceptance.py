@@ -69,10 +69,15 @@ class FactoryCase(unittest.TestCase):
     def initialize(self, *, dirty=False, command=None):
         if dirty:
             self.write('src/unrelated.ts', 'user preexisting edit\n')
-        self.write('artifacts/factory-local/original/requirement.md', 'Observable behavior')
+        runner.write_json(self.task / 'classification.json', {'schema': 'factory-local/classification/4',
+                          'scope': 'frontend', 'has_design': False, 'needs_browser_acceptance': True})
+        runner.write_json(self.task / 'skill-selection.json', {'schema': 'factory-local/skill-selection/2',
+                          'status': 'passed', 'policy': {'sha256': runner.digest(self.root / '.rules/skills/factory-routing.json')},
+                          'selected': []})
+        self.requirement(self.task, self.request)
         self.clarify(self.task, self.request)
         binding = runner.spec_input(self.task, self.request)
-        self.contract = {'schema': 'factory-local/spec-contract/1', **{k: v for k, v in binding.items() if k != 'schema'},
+        self.contract = {'schema': 'factory-local/spec-contract/2', **{k: v for k, v in binding.items() if k != 'schema'},
                          'goal': 'Verify behavior', 'scope': {'allowed_files': ['src/allowed.ts'], 'non_goals': ['No other edits']},
                          'verification': [
                              {'id': 'V-C', 'kind': 'command', 'argv': command or self.argv,
@@ -81,17 +86,14 @@ class FactoryCase(unittest.TestCase):
                               'environment': 'mock', 'required': True, 'status': 'NOT_RUN'},
                              {'id': 'V-R', 'kind': 'manual', 'steps': ['Observe test environment'],
                               'environment': 'test-environment', 'required': True, 'status': 'NOT_RUN'}],
-                         'acceptance': [{'id': 'AC-1', 'criterion': 'Observed result', 'clarification_ids': ['CL-1'],
+                         'acceptance': [{'id': 'AC-1', 'criterion': 'Observed result', 'requirement_ids': ['RQ-1'],
+                                         'clarification_ids': ['CL-1'],
                                          'verification_ids': ['V-C', 'V-M', 'V-R']}],
                          'external_requirements': []}
         runner.write_json(self.task / 'spec-input.json', binding)
         runner.write_json(self.task / 'spec-contract.json', self.contract)
         (self.task / 'spec.md').write_text(f"{binding['task_id']} AC-1 src/allowed.ts")
         runner.validate_spec(self.task, self.request, self.config)
-        runner.write_json(self.task / 'classification.json', {'schema': 'factory-local/classification/4',
-                          'scope': 'frontend', 'has_design': False, 'needs_browser_acceptance': True})
-        runner.write_json(self.task / 'skill-selection.json', {'schema': 'factory-local/skill-selection/2',
-                          'status': 'passed', 'policy': {'sha256': runner.digest(self.root / '.rules/skills/factory-routing.json')}})
         before = snapshot(self.root)
         baseline = {'schema': 'factory-local/worktree-baseline/1', 'snapshot': before, 'legacy_scope_candidates': []}
         runner.write_json(self.task / 'worktree-baseline.json', baseline)
@@ -114,10 +116,13 @@ class FactoryCase(unittest.TestCase):
             self.ready()
             for stage in ('classify', 'skill-discovery', 'requirement', 'clarification', 'spec'):
                 runner.append_event(self.task / 'state-events.jsonl', stage, 'completed')
+            args = type('Args', (), {'model': 'fixture', 'stage_timeout': 10})()
+            with patch.object(runner, 'omp', side_effect=self.spec_review_response):
+                runner.independent_spec_review(args, self.task, self.request, self.contract, self.config)
+            runner.append_event(self.task / 'state-events.jsonl', 'spec-review', 'completed')
             runner.check_preflight(None, self.task, self.request, self.contract, self.config)
             runner.append_event(self.task / 'state-events.jsonl', 'preflight', 'completed')
             runner.append_event(self.task / 'state-events.jsonl', 'implement', 'completed')
-            args = type('Args', (), {'model': 'fixture', 'stage_timeout': 10})()
             with patch.object(runner, 'omp', side_effect=self.review_response):
                 runner.independent_review(args, self.task, self.request, self.contract, self.config)
             runner.append_event(self.task / 'state-events.jsonl', 'review', 'completed')
@@ -125,16 +130,55 @@ class FactoryCase(unittest.TestCase):
         finally:
             runner.ACTIVE_ATTEMPT.reset(token)
 
+    def requirement(self, task, request):
+        binding = runner.requirement_input(task, request)
+        selection = json.loads((task / 'skill-selection.json').read_text())
+        usages = [
+            {'id': f'SU-{index}', 'name': row['name'], 'path': row['path'],
+             'reason': row.get('reason') or 'Selected by routing policy',
+             'applied_rules': ['Read the selected skill before analysis']}
+            for index, row in enumerate(selection.get('selected', []), 1)
+        ]
+        contract = {
+            'schema': 'factory-local/requirement-contract/1',
+            **{key: value for key, value in binding.items() if key != 'schema'},
+            'goal': 'Provide the observable behavior requested by the operator',
+            'scope': {'in_scope': ['The explicitly requested behavior'],
+                      'non_goals': ['No behavior beyond the original request']},
+            'observations': [{'id': 'OBS-1', 'kind': 'request',
+                              'statement': 'The operator supplied an explicit behavior request',
+                              'source': {'path': 'request', 'quote': request.read_text()},
+                              'limitation': 'This evidence covers only the original request'}],
+            'behavior_candidates': [{'id': 'RQ-1', 'given': 'The original request is in scope',
+                                     'when': 'The requested behavior is exercised',
+                                     'then': 'The observable result matches the request',
+                                     'forbidden': 'Do not add unrelated behavior',
+                                     'source_ids': ['OBS-1'], 'status': 'explicit'}],
+            'open_questions': [], 'skill_usage': usages,
+            'acceptance_candidates': [{'id': 'RAC-1', 'criterion': 'The requested result is observable',
+                                       'behavior_ids': ['RQ-1'],
+                                       'verification_hint': 'Run the declared local command and environment checks',
+                                       'environment': 'local', 'status': 'NOT_RUN'}],
+        }
+        runner.write_json(task / 'requirement-input.json', binding)
+        runner.write_json(task / 'requirement-contract.json', contract)
+        (task / 'requirement.md').write_text(
+            f"# Requirement analysis\n\nTask: {binding['task_id']}\n\n- RQ-1: observable behavior\n")
+        runner.validate_requirement(task, request)
+
     def clarify(self, task, request):
         runner.business_sources(task, request, self.config, freeze=True)
         runner.write_json(task / 'clarification-contract.json', {
-            'schema': 'factory-local/clarification/2', 'workflow_version': VERSION,
+            'schema': 'factory-local/clarification/3', 'workflow_version': VERSION,
             'task_id': runner.task_identity(task), 'request_sha256': runner.digest(request),
             'requirement_sha256': runner.digest(task / 'requirement.md'), 'answers_sha256': None,
+            'requirement_contract_sha256': runner.digest(task / 'requirement-contract.json'),
             'business_sources_sha256': runner.digest(task / 'business-sources.snapshot.json'),
             'rules': [{'id': 'CL-1', 'given': 'Original request', 'when': 'User acts',
                        'then': 'Observed behavior', 'forbidden': 'No extra effects',
                        'source': {'kind': 'request', 'quote': request.read_text()}}],
+            'requirement_coverage': [{'id': 'RC-1', 'candidate_id': 'RQ-1', 'resolution': 'rule',
+                                      'rule_id': 'CL-1', 'question_id': None}],
             'open_questions': [], 'assumptions': [], 'source_conflicts': []})
         runner.write_json(task / 'clarification-result.json',
                           runner.validate_clarification(task, request, runner.task_identity(task)))
@@ -162,6 +206,21 @@ class FactoryCase(unittest.TestCase):
             'id': 'AC-1', 'verdict': 'covered', 'reason': 'Independent fixture checks original requirement',
             'evidence': proof}])
         return subprocess.CompletedProcess(['fixture reviewer'], 0, json.dumps(report), '')
+
+    def spec_review_response(self, *args):
+        report = json.loads((self.task / 'spec-review-input.json').read_text())
+        report.pop('context'); report.pop('manifest')
+        report['schema'] = 'factory-local/spec-review-result/1'
+        proof = [{'path': 'request.md', 'quote': self.request.read_text()}]
+        report.update(
+            requirement_coverage=[{'id': 'RQ-1', 'verdict': 'covered',
+                                   'reason': 'The Spec preserves the explicit requirement', 'evidence': proof}],
+            clarification_coverage=[{'id': 'CL-1', 'verdict': 'covered',
+                                     'reason': 'The Spec preserves the confirmed rule', 'evidence': proof}],
+            acceptance=[{'id': 'AC-1', 'verdict': 'covered',
+                         'reason': 'The acceptance criterion is traceable to the request', 'evidence': proof}],
+            findings=[])
+        return subprocess.CompletedProcess(['fixture spec reviewer'], 0, json.dumps(report), '')
 
     def evidence(self, checks=None):
         expected = evidence_request(self.task, runner.task_identity(self.task), runner.digest(self.request),

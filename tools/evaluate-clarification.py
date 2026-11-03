@@ -97,7 +97,27 @@ def prepare(pack, output, selected=None):
                    'request_sha256': digest(request)}
         sources = capture(work, read(work / 'policy.json'), binding)
         write(task / 'business-sources.snapshot.json', sources)
+        # Clarification replay isolates the decision method. This fixture is intentionally
+        # not presented as a validated requirement-contract/1 produced by the prior stage.
+        write(task / 'requirement-contract.json', {
+            'schema': 'factory-clarification/requirement-fixture/1', **binding,
+            'goal': 'Evaluate the observable behavior in the original request',
+            'scope': {'in_scope': ['The replayed request'], 'non_goals': ['No unrelated behavior']},
+            'observations': [{'id': 'OBS-1', 'kind': 'request', 'statement': request.read_text().strip(),
+                              'source': {'path': 'request', 'quote': request.read_text()},
+                              'limitation': 'Curated replay input only'}],
+            'behavior_candidates': [{'id': 'RQ-1', 'given': 'The replayed request applies',
+                                     'when': 'The requested behavior is exercised',
+                                     'then': 'The observable result follows the request',
+                                     'forbidden': 'Do not invent unrelated behavior',
+                                     'source_ids': ['OBS-1'], 'status': 'explicit'}],
+            'open_questions': [], 'skill_usage': [],
+            'acceptance_candidates': [{'id': 'RAC-1', 'criterion': 'The requested behavior is observable',
+                                       'behavior_ids': ['RQ-1'], 'verification_hint': 'Independent semantic judgement',
+                                       'environment': 'local', 'status': 'NOT_RUN'}],
+        })
         expected = {'schema': CLARIFICATION, **binding, 'requirement_sha256': digest(task / 'requirement.md'),
+                    'requirement_contract_sha256': digest(task / 'requirement-contract.json'),
                     'answers_sha256': None, 'business_sources_sha256': digest(task / 'business-sources.snapshot.json')}
         write(work / 'bindings.json', expected)
         # Only the node's relevant method is given to the generator; no oracle.

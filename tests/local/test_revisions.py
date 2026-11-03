@@ -86,7 +86,12 @@ class RevisionTests(FactoryCase):
         self.initialize()
         self.assertEqual(self.register(), 0)
         child = self.root / 'artifacts/factory-local/followup'
-        (child / 'requirement.md').write_text('Append-only scope extension')
+        runner.write_json(child / 'classification.json', {'schema': 'factory-local/classification/4',
+                          'scope': 'frontend', 'has_design': False, 'needs_browser_acceptance': True})
+        runner.write_json(child / 'skill-selection.json', {'schema': 'factory-local/skill-selection/2',
+                          'status': 'passed', 'policy': {'sha256': runner.digest(self.root / '.rules/skills/factory-routing.json')},
+                          'selected': []})
+        self.requirement(child, child / 'request.md')
         self.clarify(child, child / 'request.md')
         binding = runner.spec_input(child, child / 'request.md')
         contract = {**self.contract, **{k: v for k, v in binding.items() if k != 'schema'}}

@@ -10,8 +10,14 @@ FILES = ['runtime/local/' + name for name in (
     '__init__.py', 'bootstrap.py', 'runner.py', 'workflow.py', 'acceptance.py',
     'worktree.py', 'revisions.py', 'business_sources.py', 'quality.py', 'skills.py', 'docs_context.py', 'figma.py')]
 FILES += ['tools/factory-local-setup.py', 'tools/factory-local-lock.py']
-DEFAULT_SKILLS = {'clarification': 'factory-clarification',
-                  'preflight': 'factory-environment-preflight', 'review': 'factory-independent-review'}
+DEFAULT_SKILLS = {
+    'requirement': 'factory-requirement-analysis',
+    'clarification': 'factory-clarification',
+    'spec': 'factory-spec-authoring',
+    'spec-review': 'factory-spec-review',
+    'preflight': 'factory-environment-preflight',
+    'review': 'factory-independent-review',
+}
 
 
 def sha(path):
@@ -36,7 +42,7 @@ def create(project, source=None):
     def revision(repo):
         return subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
     return {'schema': 'factory-local/runtime-lock/1', 'api_version': 'factory-local/runtime/1',
-            'workflow_version': 'factory-local/workflow/3',
+            'workflow_version': 'factory-local/workflow/4',
             'provenance': {'factory_head': revision(source), 'rules_head': revision(rules),
                            'source_state': 'reviewed-working-tree-content',
                            'note': 'HEAD is provenance only; exact file bytes are pinned below.'},

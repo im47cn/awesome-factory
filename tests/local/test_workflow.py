@@ -17,6 +17,13 @@ import runtime.local.workflow as workflow
 
 
 class WorkflowTests(FactoryCase):
+    def test_analysis_authorization_defaults_to_spec_review(self):
+        self.request.write_text('只做需求分析，不修改业务代码。')
+        args = type('Args', (), {'authorize_through': None, 'only_stage': None,
+                                 'resume': False, 'from_stage': None})()
+        auth = runner.resolve_authorization(self.task, self.request, args, {})
+        self.assertEqual(auth['authorized_end_stage'], 'spec-review')
+
     def test_fresh_task_runs_every_new_stage_and_real_command_before_completion(self):
         self.request.write_text('src/allowed.ts 的 value 从 1 改为 2，其他源码保持原样。')
         self.write('.rules/skills/factory-routing.json', {'schema': 'factory-local/skill-routing/1',
@@ -31,14 +38,15 @@ class WorkflowTests(FactoryCase):
         def model(*args):
             stage = args[0]; calls.append(stage); prompts[stage] = args[1]
             if stage == 'requirement':
-                (self.task / 'requirement.md').write_text('Expected value is explicitly 2')
+                self.requirement(self.task, self.request)
             elif stage == 'clarification':
                 self.clarify(self.task, self.request)
             elif stage == 'spec':
                 inputs = json.loads((self.task / 'spec-input.json').read_text())
-                self.contract = {**inputs, 'schema': 'factory-local/spec-contract/1', 'goal': 'value becomes 2',
+                self.contract = {**inputs, 'schema': 'factory-local/spec-contract/2', 'goal': 'value becomes 2',
                                  'scope': {'allowed_files': ['src/allowed.ts'], 'non_goals': ['No other source edits']},
-                                 'acceptance': [{'id': 'AC-1', 'criterion': 'value is 2', 'clarification_ids': ['CL-1'],
+                                 'acceptance': [{'id': 'AC-1', 'criterion': 'value is 2', 'requirement_ids': ['RQ-1'],
+                                                 'clarification_ids': ['CL-1'],
                                                  'verification_ids': ['V-C']}],
                                  'verification': [{'id': 'V-C', 'kind': 'command', 'argv': self.argv,
                                                    'environment': 'local', 'required': True, 'status': 'NOT_RUN'}],
@@ -47,6 +55,8 @@ class WorkflowTests(FactoryCase):
                 (self.task / 'spec.md').write_text(f"{inputs['task_id']} AC-1 src/allowed.ts")
             elif stage == 'implement':
                 self.write('src/allowed.ts', 'export const value = 2\n')
+            elif stage == 'spec-review':
+                return self.spec_review_response(*args)
             elif stage == 'review':
                 return self.review_response(*args)
             else:
@@ -54,9 +64,9 @@ class WorkflowTests(FactoryCase):
             return subprocess.CompletedProcess([], 0, '{}', '')
         with patch.object(runner, 'omp', side_effect=model):
             self.assertEqual(runner.main(['--task', 'original', '--request-file', str(self.request)]), 0)
-        self.assertEqual(calls, ['requirement', 'clarification', 'spec', 'implement', 'review'])
+        self.assertEqual(calls, ['requirement', 'clarification', 'spec', 'spec-review', 'implement', 'review'])
         self.assertEqual(self.result()['overall_status'], 'completed')
-        for stage in ('clarification', 'review'):
+        for stage in ('requirement', 'clarification', 'spec', 'spec-review', 'review'):
             name = self.config['workflow_skills'][stage]
             self.assertIn((self.root / '.rules/skills' / name / 'SKILL.md').read_text(), prompts[stage])
         guide = json.loads((self.task / 'preflight-guide.json').read_text())
@@ -129,6 +139,68 @@ class WorkflowTests(FactoryCase):
         self.assertEqual(self.result()['resume_from'], 'spec')
         self.assertEqual(self.result()['status'], 'stage_completed')
 
+    def test_requirement_contract_rejects_untraceable_evidence(self):
+        self.initialize()
+        value = json.loads((self.task / 'requirement-contract.json').read_text())
+        value['observations'][0]['source']['quote'] = 'text that is absent from the original request'
+        runner.write_json(self.task / 'requirement-contract.json', value)
+        with self.assertRaisesRegex(ValueError, '证据引用未命中原文'):
+            runner.validate_requirement(self.task, self.request)
+
+    def test_spec_review_cannot_use_spec_as_its_only_upstream_proof(self):
+        self.initialize()
+        result = json.loads((self.task / 'spec-review-result.json').read_text())
+        context = Path(result['context'])
+        quote = (context / 'spec.md').read_text()
+        for field in ('requirement_coverage', 'clarification_coverage', 'acceptance'):
+            for row in result[field]:
+                row['evidence'] = [{'path': 'spec.md', 'quote': quote}]
+        runner.write_json(self.task / 'spec-review-result.json', result)
+        with self.assertRaisesRegex(ValueError, '不能由 Spec 自证'):
+            runner.require_current_spec_review(self.task, self.request, self.contract)
+
+    def test_spec_review_gap_stale_binding_and_context_tamper_cannot_pass(self):
+        self.initialize()
+        original = json.loads((self.task / 'spec-review-result.json').read_text())
+        gap = json.loads(json.dumps(original))
+        gap['requirement_coverage'][0]['verdict'] = 'gap'
+        runner.write_json(self.task / 'spec-review-result.json', gap)
+        with self.assertRaises(workflow.WorkflowPending):
+            runner.require_current_spec_review(self.task, self.request, self.contract)
+        stale = json.loads(json.dumps(original))
+        stale['task_id'] = 'local-20000101-deadbeef'
+        runner.write_json(self.task / 'spec-review-result.json', stale)
+        with self.assertRaisesRegex(ValueError, '输入版本不匹配'):
+            runner.require_current_spec_review(self.task, self.request, self.contract)
+        runner.write_json(self.task / 'spec-review-result.json', original)
+        context = Path(original['context'])
+        (context / 'spec.md').write_text((context / 'spec.md').read_text() + '\ntampered\n')
+        with self.assertRaisesRegex(ValueError, '输入版本不匹配'):
+            runner.require_current_spec_review(self.task, self.request, self.contract)
+
+    def test_selected_domain_skill_content_drift_is_blocked(self):
+        self.write('.rules/skills/factory-routing.json', {'schema': 'factory-local/skill-routing/1',
+                   'skills': {**{name: {'explicit_only': True} for name in self.config['workflow_skills'].values()},
+                              'fixture': {'triggers': ['fixture behavior']}}})
+        skill = self.write('.rules/skills/fixture/SKILL.md',
+                           '---\nname: fixture\n---\nUse the fixture rule.\n')
+        rule = self.write('.rules/skills/fixture/scripts/check.py',
+                          'RULE = "original"\n')
+        request = self.write('artifacts/factory-local/original/request.md',
+                             'Please implement fixture behavior')
+        status, _ = runner.discover_skills(request, {'scope': 'frontend', 'has_design': False}, self.task)
+        self.assertEqual(status, 'passed')
+        runner.validate_selected_skills(self.task)
+        skill.write_text(skill.read_text() + '\nChanged after selection.\n')
+        with self.assertRaisesRegex(ValueError, '内容已变化'):
+            runner.validate_selected_skills(self.task)
+        skill.write_text('---\nname: fixture\n---\nUse the fixture rule.\n')
+        runner.discover_skills(request, {'scope': 'frontend', 'has_design': False}, self.task)
+        runner.validate_selected_skills(self.task)
+        rule.write_text('RULE = "changed after selection"\n')
+        with self.assertRaisesRegex(ValueError, '内容已变化'):
+            runner.validate_selected_skills(self.task)
+
     def test_blocking_question_stops_before_spec_and_is_recoverable(self):
         self.initialize()
         value = json.loads((self.task / 'clarification-contract.json').read_text())
@@ -139,6 +211,16 @@ class WorkflowTests(FactoryCase):
         self.assertEqual(self.result()['overall_status'], 'awaiting_clarification')
         self.assertEqual(self.result()['resume_from'], 'clarification')
         self.assertFalse((self.task / 'spec.md').exists())
+
+    def test_requirement_candidate_cannot_resolve_to_nonblocking_question(self):
+        self.initialize()
+        value = json.loads((self.task / 'clarification-contract.json').read_text())
+        value['open_questions'] = [{'id': 'Q-1', 'question': 'Which business behavior?', 'blocking': False}]
+        value['requirement_coverage'] = [{'id': 'RC-1', 'candidate_id': 'RQ-1',
+                                          'resolution': 'question', 'rule_id': None, 'question_id': 'Q-1'}]
+        runner.write_json(self.task / 'clarification-contract.json', value)
+        with self.assertRaisesRegex(ValueError, '必须引用有效问题'):
+            validate_clarification(self.task, self.request, runner.task_identity(self.task))
 
     def test_unconfirmed_behavior_assumption_blocks_but_informational_assumption_does_not(self):
         self.initialize()
@@ -306,9 +388,9 @@ class WorkflowTests(FactoryCase):
 
     def test_node_v_prefix_is_parsed_and_required_patch_version_is_enforced(self):
         self.initialize()
-        for version, expected_rc in [('v22.22.3', 0), ('v22.20.0', 3)]:
+        for version, expected_rc in [('v24.19.0', 0), ('v24.18.0', 3)]:
             override = {**self.config, 'preflight_commands': [{'id': 'node',
-                'argv': [runner.sys.executable, '-c', f'print({version!r})'], 'minimum_version': [22, 22, 3]}]}
+                'argv': [runner.sys.executable, '-c', f'print({version!r})'], 'minimum_version': [24, 19, 0]}]}
             with patch.object(runner, 'load_local_factory_config', return_value=override):
                 self.assertEqual(self.run_from('preflight', '--only-stage', 'preflight'), expected_rc)
 

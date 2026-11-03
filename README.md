@@ -6,6 +6,7 @@
 文件的唯一上游真相源。
 
 - 接入指南（新电脑 / 新项目）：[docs/onboarding.md](docs/onboarding.md)
+- 首个前端用户 0→1 试点：[docs/first-frontend-user-guide.md](docs/first-frontend-user-guide.md)
 - 前端本地一站式接入：`python3 tools/factory-local-setup.py init /path/to/repo`；团队 clone 后运行 `python3 .factory/setup.py check .`
 - 运维手册：[.factory/README.md](.factory/README.md)
 - 治理宪法：[MISSION.md](MISSION.md)
@@ -26,4 +27,4 @@ python3 -m pytest .factory/tests -o addopts= -q   # 工厂测试套件
 
 前置条件与完整手册见 [.factory/README.md](.factory/README.md)。
 
-公共本地十阶段工作流、三项 Skill 分层、项目薄适配与升级说明见 [shared-local-workflow](docs/design/shared-local-workflow.md)。旧七阶段外部验收协议单独保留，不与原生流程快照混用。
+公共本地十一阶段工作流、六项方法 Skill 分层、项目薄适配与升级说明见 [shared-local-workflow](docs/design/shared-local-workflow.md)。旧七阶段外部验收协议单独保留，不与原生流程快照混用。
