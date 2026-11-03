@@ -82,7 +82,8 @@ STAGE_OUTPUTS = {
     "review": ["review-input.json", "review-result.json", "stage-integrity.json"],
     "verify": ["result.json", "verification.request.json", "verification-result.json",
                "verify-scope-result.json", "verify-preflight-result.json",
-               "browser-acceptance.request.json", "visual-guard-result.json"],
+               "browser-acceptance.request.json", "visual-guard-result.json",
+               "quality-gate-receipt.json"],
 }
 ACTIVE_ATTEMPT = contextvars.ContextVar("factory_attempt", default=None)
 DOCS_STAGES = {"requirement", "clarification", "spec", "implement", "verify"}
@@ -1236,14 +1237,18 @@ def run(
     log: Path | None = None,
     check: bool = True,
     timeout: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     attempt = ACTIVE_ATTEMPT.get()
     if log and attempt:
         log = attempt.directory / log.name
     process = None
     try:
+        process_env = os.environ.copy()
+        if env:
+            process_env.update(env)
         process = subprocess.Popen(cmd, cwd=ROOT, text=True, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, start_new_session=True)
+                                   stderr=subprocess.PIPE, start_new_session=True, env=process_env)
         if attempt:
             attempt.save_state("running", active_command={"pid": process.pid, "command": cmd[:2]})
         stdout, stderr = process.communicate(timeout=timeout)
@@ -1272,6 +1277,51 @@ def run(
     if check and p.returncode:
         raise CommandFailure(cmd, p.returncode, "command_failed")
     return p
+
+
+def bind_quality_gate_receipt(task: Path, gate: subprocess.CompletedProcess[str], command: list[str]) -> dict:
+    """Archive a quality receipt in the active attempt and bind it to this verify run."""
+    attempt = ACTIVE_ATTEMPT.get()
+    if attempt is None:
+        raise ValueError('质量门缺少当前任务尝试绑定')
+    source = None
+    for line in reversed((gate.stdout + gate.stderr).splitlines()):
+        if line.startswith('receipt: '):
+            source = Path(line.removeprefix('receipt: ').strip())
+            break
+    detailed = None
+    if source is not None:
+        if not source.is_absolute():
+            source = ROOT / source
+        source = source.resolve()
+        quality_root = (ROOT / 'artifacts/factory-local/quality').resolve()
+        if not source.is_file() or not source.is_relative_to(quality_root):
+            raise ValueError('质量门收据缺失或路径越界')
+        value = json.loads(source.read_text(encoding='utf-8'))
+        expected = {'task_id': attempt.task_id, 'attempt_id': attempt.id, 'stage': 'verify'}
+        if any(value.get(key) != expected_value for key, expected_value in expected.items()):
+            raise ValueError('质量门收据未绑定当前 task/attempt/verify')
+        archived = attempt.directory / 'quality'
+        if archived.exists():
+            shutil.rmtree(archived)
+        shutil.copytree(source.parent, archived)
+        detailed = archived / 'receipt.json'
+    log = attempt.directory / 'final-gate.log'
+    receipt = {
+        'schema': 'factory-local/quality-stage-receipt/1',
+        'task_id': attempt.task_id,
+        'attempt_id': attempt.id,
+        'stage': 'verify',
+        'request_sha256': attempt.request_sha256,
+        'command': command,
+        'exit_code': gate.returncode,
+        'log': str(log),
+        'log_sha256': digest(log) if log.is_file() else None,
+        'detailed_receipt': str(detailed) if detailed else None,
+        'detailed_receipt_sha256': digest(detailed) if detailed else None,
+    }
+    write_json(task / 'quality-gate-receipt.json', receipt)
+    return receipt
 
 
 def append_event(path: Path, stage: str, status: str, **extra: object) -> None:
@@ -2035,6 +2085,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--revision-reason", help="追加修复/范围变更原因，必须显式提供")
     ap.add_argument("--revision-evidence", type=Path, action='append', default=[], help="引用既有任务证据，仅作历史，不继承通过状态")
     args = ap.parse_args(argv)
+    if args.verification_evidence and args.browser_evidence:
+        print("--verification-evidence 与 --browser-evidence 不能同时提供；请把浏览器证据作为统一验收收据的 artifacts/checks 引用", file=sys.stderr)
+        return 2
     if args.revision_of and (args.resume or args.from_stage or args.only_stage):
         ap.error('--revision-of 仅登记修订，不与恢复/阶段执行混用')
     base = (ROOT / "artifacts" / "factory-local").resolve()
@@ -2085,7 +2138,8 @@ def main(argv: list[str] | None = None) -> int:
             policy_path = task / 'execution-policy.json'
             prior_policy = object_file(policy_path) if policy_path.is_file() else {}
             scope = args.acceptance_scope or prior_policy.get('acceptance_scope', 'all')
-            if args.acceptance_scope and previous and args.from_stage not in {'classify', 'clarification', 'spec', 'preflight'}:
+            restart_stage = previous.get('resume_from') if args.resume and previous else args.from_stage
+            if args.acceptance_scope and previous and restart_stage not in {'classify', 'clarification', 'spec', 'preflight'}:
                 if prior_policy.get('acceptance_scope') != scope:
                     raise ValueError('改变环境准备范围须显式从 preflight 或更早阶段重跑，不改写原验收义务')
             write_json(policy_path, {'workflow_version': WORKFLOW_VERSION, 'task_id': task_identity(task),
@@ -2500,11 +2554,23 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
             guard = run(["python3", ".factory/guard.py", "--files", *files], log=task / "guard.log", check=False)
             if guard.returncode:
                 raise CommandFailure(["python3", ".factory/guard.py"], guard.returncode, "guard_failed")
-        gate = run(shlex.split(config["final_gate_cmd"]), log=task / "final-gate.log", check=False)
+        gate_command = shlex.split(config["final_gate_cmd"])
+        current_attempt = ACTIVE_ATTEMPT.get()
+        gate = run(
+            gate_command,
+            log=task / "final-gate.log",
+            check=False,
+            env={
+                'FACTORY_QUALITY_TASK_ID': current_attempt.task_id,
+                'FACTORY_QUALITY_ATTEMPT_ID': current_attempt.id,
+                'FACTORY_QUALITY_STAGE': 'verify',
+            },
+        )
+        bind_quality_gate_receipt(task, gate, gate_command)
         if verification_source != source_digest():
             raise ValueError("源码在验证期间发生变化；请重新执行 implement 和 verify")
         if gate.returncode:
-            raise CommandFailure(shlex.split(config["final_gate_cmd"]), gate.returncode, "quality_gate_failed")
+            raise CommandFailure(gate_command, gate.returncode, "quality_gate_failed")
         visual = None
         if classification.get("has_design") and classification.get("scope") in {"frontend", "fullstack"}:
             write_visual_templates(task)

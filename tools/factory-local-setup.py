@@ -35,7 +35,8 @@ class Audit:
         self.nodes.append(row)
         with (self.directory / 'nodes.jsonl').open('a') as f:
             f.write(json.dumps(row, ensure_ascii=False) + '\n')
-        print(f'{node}: {status}', flush=True)
+        reason = f' — {details["reason"]}' if details.get('reason') else ''
+        print(f'{node}: {status}{reason}', flush=True)
 
     def run(self, node, argv, expected=(0,)):
         try:
@@ -69,8 +70,21 @@ def git(repo, *args):
 def quality_commands(repo):
     package = json.loads((repo / 'package.json').read_text())
     scripts = package.get('scripts', {})
-    names = ['format:check', 'lint:ci', 'stylelint:ci', 'typecheck', 'test:ci',
-             'contract:check', 'contract:fields', 'contract:stale-v1', 'build:dev']
+    if 'coverage:gate' not in scripts:
+        raise ValueError('缺少 package.json scripts.coverage:gate；先完成 frontend-unit-test-setup，不能仅依赖 Git Hook')
+    contract_names = ['contract:check', 'contract:fields', 'contract:stale-v1']
+    if 'quality:check' in scripts:
+        names = ['quality:check', 'coverage:gate', *contract_names]
+    else:
+        names = ['format:check', 'lint:ci', 'stylelint:ci', 'typecheck']
+        test_name = next((name for name in ('test:ci', 'test:unit') if name in scripts), None)
+        if test_name:
+            names.append(test_name)
+        names.append('coverage:gate')
+        names.extend(contract_names)
+        build_name = next((name for name in ('build:dev', 'build') if name in scripts), None)
+        if build_name:
+            names.append(build_name)
     return [{'id': name.replace(':', '-'), 'argv': ['pnpm', 'run', name]}
             for name in names if name in scripts]
 
@@ -86,6 +100,10 @@ def install(repo, audit):
         raise ValueError('当前一站式方案支持 package.json 前端仓；后端请使用 factory-init --project-type backend')
     if not (repo / 'README.md').is_file():
         raise ValueError('缺少 README.md 良性负例载体；请先补真实项目文档')
+    # Validate the project's current-worktree quality contract before installing
+    # any governance files. A missing coverage gate is an incomplete engineering
+    # baseline, not a partially installed Factory repository.
+    commands = quality_commands(repo)
     # Keep README outside perimeter for B-01; protect actual existing governance files.
     perimeter = ['.gitignore']
     perimeter += [p for p in ['scripts/', 'docs/', '.aliyun/', '.github/', '.lefthook/', 'lefthook.yml',
@@ -125,7 +143,7 @@ def install(repo, audit):
         upstream_path=os.path.relpath(SOURCE, repo),
         intent_routing={'remote_handoff': {'enabled': True, 'executor': 'awesome-factory',
             'local_runner_may_execute_remote_actions': False}},
-        quality_commands=quality_commands(repo))
+        quality_commands=commands)
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + '\n')
     mission = repo / 'MISSION.md'
     text = mission.read_text()

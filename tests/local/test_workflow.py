@@ -17,6 +17,14 @@ import runtime.local.workflow as workflow
 
 
 class WorkflowTests(FactoryCase):
+    def test_verification_and_browser_receipts_cannot_silently_shadow_each_other(self):
+        rc = runner.main([
+            '--task', 'original', '--request-file', str(self.request),
+            '--verification-evidence', 'verification.json',
+            '--browser-evidence', 'browser.json',
+        ])
+        self.assertEqual(rc, 2)
+
     def test_analysis_authorization_defaults_to_spec_review(self):
         self.request.write_text('只做需求分析，不修改业务代码。')
         args = type('Args', (), {'authorize_through': None, 'only_stage': None,
@@ -460,6 +468,19 @@ class WorkflowTests(FactoryCase):
         self.assertEqual(self.result()['integration_status'], 'not_run')
         self.assertEqual(self.result()['acceptance_scope'], 'local-mock')
 
+    def test_resume_can_change_to_local_mock_when_recovery_starts_at_preflight(self):
+        self.initialize()
+        state = json.loads((self.task / 'run-state.json').read_text())
+        state.update(status='stage_completed', stage='spec-review', resume_from='preflight')
+        runner.write_json(self.task / 'run-state.json', state)
+        self.assertEqual(runner.main([
+            '--task', 'original', '--request-file', str(self.request), '--resume',
+            '--only-stage', 'preflight', '--acceptance-scope', 'local-mock',
+        ]), 0)
+        preflight = json.loads((self.task / 'preflight-result.json').read_text())
+        self.assertEqual(preflight['acceptance_scope'], 'local-mock')
+        self.assertEqual(self.result()['resume_from'], 'implement')
+
     def test_high_review_issue_blocks_even_when_model_claims_passed_and_resolved(self):
         self.initialize()
         def model(*args):
@@ -588,6 +609,32 @@ class WorkflowTests(FactoryCase):
         rc, result = self.run_verify(self.evidence())
         self.assertEqual(rc, 2)
         self.assertIn('review', result['reason'])
+
+    def test_failed_quality_receipt_is_bound_and_archived_in_verify_attempt(self):
+        self.config['quality_commands'] = [{
+            'id': 'coverage-gate',
+            'argv': [runner.sys.executable, '-c', 'raise SystemExit(9)'],
+        }]
+        self.write('.factory/factory-local.json', self.config)
+        self.initialize()
+        rc, result = self.run_verify(self.evidence())
+        self.assertEqual(rc, 1)
+        self.assertEqual(result['failure_code'], 'quality_gate_failed')
+        attempt = Path(result['artifact_dir'])
+        archived = attempt / 'partial/quality-gate-receipt.json'
+        self.assertTrue(archived.is_file())
+        receipt = json.loads(archived.read_text())
+        self.assertEqual(receipt['task_id'], result['task_id'])
+        self.assertEqual(receipt['attempt_id'], result['attempt_id'])
+        self.assertEqual(receipt['stage'], 'verify')
+        self.assertEqual(receipt['exit_code'], 1)
+        detailed = Path(receipt['detailed_receipt'])
+        self.assertTrue(detailed.is_relative_to(attempt))
+        detail = json.loads(detailed.read_text())
+        self.assertEqual(detail['task_id'], result['task_id'])
+        self.assertEqual(detail['attempt_id'], result['attempt_id'])
+        self.assertEqual(detail['stage'], 'verify')
+        self.assertEqual(detail['results'][0]['exit_code'], 9)
 
     def test_changed_review_context_blocks_even_if_source_and_root_receipt_are_unchanged(self):
         self.initialize()

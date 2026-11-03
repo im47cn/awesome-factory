@@ -13,6 +13,8 @@
 
 适用于尚无 `.factory` 的 Vue/TypeScript 项目；先检查现有工作树和包管理器，不切分支、不提交或推送，也不安装远程派发器。当前一站式入口支持前端仓，后端仍使用下文的 factory-init profile。
 
+如果目标还是空 Git 仓，不要直接运行 Factory init：应先按[首个前端用户 0→1 指南](first-frontend-user-guide.md)执行 `frontend-repo-bootstrap`、覆盖率门禁接入和本地基线提交，再接入 Factory。本节以下命令面向已经存在 `package.json`、README、面向当前工作树的 `coverage:gate`、可运行质量命令以及至少一个 Git commit 的前端仓；没有覆盖率固定入口或 HEAD 时初始化会明确失败。
+
 ```bash
 # 新仓库第一次接入（在任意目录执行，路径可包含空格）
 python3 /path/to/awesome-factory/tools/factory-local-setup.py init /path/to/frontend-repo

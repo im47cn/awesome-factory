@@ -2,6 +2,7 @@
 """Run configured checks without fixing source files; retain every exit code."""
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import uuid
@@ -69,8 +70,24 @@ def main():
         if integrity_error:
             # Leave unexpected changes visible, and do not run more commands on them.
             break
+    binding = {
+        'task_id': os.environ.get('FACTORY_QUALITY_TASK_ID'),
+        'attempt_id': os.environ.get('FACTORY_QUALITY_ATTEMPT_ID'),
+        'stage': os.environ.get('FACTORY_QUALITY_STAGE'),
+    }
+    supplied = [value is not None for value in binding.values()]
+    if any(supplied) and not all(supplied):
+        print('quality receipt binding incomplete', file=sys.stderr)
+        return 2
+    payload = {
+        'schema': 'factory-local/quality/2',
+        'created_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+        'results': results,
+    }
+    if all(supplied):
+        payload.update(binding)
     receipt = directory / 'receipt.json'
-    receipt.write_text(json.dumps({'schema': 'factory-local/quality/1', 'results': results}, indent=2) + '\n')
+    receipt.write_text(json.dumps(payload, indent=2) + '\n')
     print(f'receipt: {receipt}')
     return 0 if all(r['exit_code'] == 0 for r in results) else 1
 
