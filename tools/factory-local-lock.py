@@ -8,7 +8,8 @@ import subprocess
 
 FILES = ['runtime/local/' + name for name in (
     '__init__.py', 'bootstrap.py', 'runner.py', 'workflow.py', 'acceptance.py',
-    'worktree.py', 'revisions.py', 'business_sources.py', 'quality.py', 'skills.py', 'docs_context.py', 'figma.py')]
+    'worktree.py', 'revisions.py', 'business_sources.py', 'quality.py', 'skills.py', 'docs_context.py', 'figma.py',
+    'policy.py', 'protocol.py', 'execution.py', 'browser.py', 'browser-driver.mjs')]
 FILES += ['tools/factory-local-setup.py', 'tools/factory-local-lock.py']
 DEFAULT_SKILLS = {
     'requirement': 'factory-requirement-analysis',
@@ -25,7 +26,18 @@ def sha(path):
 
 
 def test_inputs(source):
-    return [*(source / 'tests/local').glob('*.py'), *(source / 'templates/local').glob('*.py'), source / '.factory/guard.py', source / 'tools/evaluate-clarification.py']
+    return [*(source / 'tests/local').glob('*.py'), *(source / 'templates/local').glob('*.py'), source / '.factory/guard.py',
+            *(source / ('tools/' + name) for name in ('evaluate-clarification.py', 'evaluate-spec-quality.py', 'factory-local-workspace.py'))]
+
+
+def rule_test_inputs(rules):
+    return [path for skill in ('factory-clarification', 'factory-spec-review')
+            for path in (rules / 'skills' / skill / 'evals').rglob('*') if path.is_file() and not path.is_symlink()]
+
+
+def skill_inputs(rules, mapping):
+    return [path for name in mapping.values() for path in [rules / 'skills' / name / 'SKILL.md',
+            *sorted((rules / 'skills' / name / 'references').glob('*.md'))]]
 
 
 def create(project, source=None):
@@ -33,12 +45,10 @@ def create(project, source=None):
     source = source or (project / config['upstream_path']).resolve()
     rules = (project / config['rules_path']).resolve()
     skills = {}
-    for name in config['workflow_skills'].values():
-        for rel in [f'skills/{name}/SKILL.md', *sorted(p.relative_to(rules).as_posix() for p in (rules / 'skills' / name / 'references').glob('*.md'))]:
-            path = rules / rel
-            if not path.resolve().is_relative_to(rules) or path.is_symlink():
-                raise ValueError('Skill path outside reviewed rules repository')
-            skills[rel] = sha(path)
+    for path in skill_inputs(rules, config['workflow_skills']):
+        if not path.resolve().is_relative_to(rules) or path.is_symlink():
+            raise ValueError('Skill path outside reviewed rules repository')
+        skills[path.relative_to(rules).as_posix()] = sha(path)
     def revision(repo):
         return subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
     return {'schema': 'factory-local/runtime-lock/1', 'api_version': 'factory-local/runtime/1',
@@ -47,7 +57,8 @@ def create(project, source=None):
                            'source_state': 'reviewed-working-tree-content',
                            'note': 'HEAD is provenance only; exact file bytes are pinned below.'},
             'files': {name: sha(source / name) for name in FILES}, 'skills': skills,
-            'test_files': {p.relative_to(source).as_posix(): sha(p) for p in test_inputs(source)}}
+            'test_files': {p.relative_to(source).as_posix(): sha(p) for p in test_inputs(source)},
+            'test_rules_files': {p.relative_to(rules).as_posix(): sha(p) for p in rule_test_inputs(rules)}}
 
 
 def main():
@@ -65,7 +76,7 @@ def main():
             return 0
         current = json.loads(path.read_text())
         # Git history can move without affecting the reviewed bytes.
-        if any(current.get(key) != value[key] for key in ('schema', 'api_version', 'workflow_version', 'files', 'skills', 'test_files')):
+        if any(current.get(key) != value[key] for key in ('schema', 'api_version', 'workflow_version', 'files', 'skills', 'test_files', 'test_rules_files')):
             raise ValueError('Shared runtime/skills changed; review the diff before using --write')
         print('Shared runtime and Skill pins: PASS')
         return 0

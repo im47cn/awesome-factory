@@ -108,11 +108,24 @@ class AdapterTests(unittest.TestCase):
         shutil.copy2(SOURCE / '.factory/guard.py', source / '.factory/guard.py')
         cfg['upstream_path'] = str(source)
         (root / '.factory/factory-local.json').write_text(json.dumps(cfg))
-        (source / 'tests/local/support.py').write_text('raise RuntimeError("unreviewed test")\n')
         shutil.copy2(SOURCE / 'templates/local/test.py', root / '.factory/test.py')
+        for name in ('tests/local/support.py', 'tools/evaluate-spec-quality.py', 'tools/factory-local-workspace.py'):
+            path = source / name; original = path.read_bytes()
+            path.write_text('raise RuntimeError("unreviewed test dependency")\n')
+            result = self.invoke(root, 'test.py')
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn('公共回归输入已变化', result.stderr)
+            self.assertNotIn('Ran ', result.stdout + result.stderr)
+            path.write_bytes(original)
+
+    def test_rule_case_drift_is_rejected_before_test_suite(self):
+        root, _ = self.project()
+        shutil.copy2(SOURCE / 'templates/local/test.py', root / '.factory/test.py')
+        path = root / '.rules/skills/factory-spec-review/evals/behavior-cases.json'
+        path.write_text('{}')
         result = self.invoke(root, 'test.py')
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn('公共回归输入已变化', result.stderr)
+        self.assertIn('Rules 回归夹具已变化', result.stderr)
         self.assertNotIn('Ran ', result.stdout + result.stderr)
 
 

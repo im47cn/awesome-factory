@@ -59,3 +59,5 @@ python3 .factory/setup.py check .
 本次 workflow/3 的实际回放、回归及隔离质量结果见 [澄清升级验证](clarification-validation-20261026.md)。
 
 workflow/4 的需求分析、澄清决策、Spec 编写和编码前独立审查整改及验证见 [workflow/4 验证记录](requirement-spec-workflow4-validation.md)。
+
+本地运行隔离、机械字段补全、自动浏览器执行、质量收据复用与阶段复盘见 [执行可靠性与自动验收](local-reliability.md)。已有项目升级需要一并审核 bridge 文件清单，不只刷新旧 lock。

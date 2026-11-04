@@ -23,6 +23,10 @@ def load(root: Path, rules: Path, config: dict) -> dict:
         required = {'SKILL.md', 'references/protocol.md'}
         if stage == 'clarification':
             required.update({'references/business-rules.md', 'references/scenarios.md'})
+        if stage in {'spec', 'spec-review'}:
+            required.add('references/generated-contract.md')
+        if stage == 'spec':
+            required.add('references/acceptance-quality.md')
         if not all((folder / item).is_file() for item in required):
             raise ValueError('公共 Skill 缺少阶段必需的参考文件：' + name)
         content, manifest = [], {}

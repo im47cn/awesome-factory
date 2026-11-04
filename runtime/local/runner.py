@@ -42,6 +42,8 @@ import re
 import shlex
 import shutil
 import signal
+import stat
+import tempfile
 import subprocess
 import sys
 import uuid
@@ -53,6 +55,12 @@ from .business_sources import capture as capture_business_sources, CLARIFICATION
 from .worktree import snapshot as worktree_snapshot, changed_files, legacy_candidates, GeneratedTransaction
 from .acceptance import evidence_request, read_evidence, scope_result, summarize, trusted_commands
 from .revisions import create_revision, validate_revision
+from .policy import perimeter as canonical_perimeter, sensitive_path, relative_path, PUBLIC_CONFIGURATION
+from .protocol import (ContractFormatError, complete as complete_contract, ID_PATTERN,
+                       ENVIRONMENTS, EVIDENCE_TYPES)
+from .execution import RepositoryLease, summarize_attempt
+from .quality import command_context
+from . import browser as browser_adapter
 from .workflow import (VERSION as WORKFLOW_VERSION, WorkflowPending, object_file, rows, text,
                       validate_clarification, validate_ac_mapping, readiness_plan,
                       readiness_request, read_readiness, readiness_result,
@@ -89,6 +97,8 @@ ACTIVE_ATTEMPT = contextvars.ContextVar("factory_attempt", default=None)
 DOCS_STAGES = {"requirement", "clarification", "spec", "implement", "verify"}
 for _docs_stage in DOCS_STAGES:
     STAGE_OUTPUTS[_docs_stage].append(f"{_docs_stage}-docs-context.json")
+for _contract_stage in ('requirement', 'clarification', 'spec'):
+    STAGE_OUTPUTS[_contract_stage].append(_contract_stage + '-contract-completion.json')
 
 
 def docs_module():
@@ -227,6 +237,7 @@ def requirement_input(task: Path, request: Path) -> dict:
         "task_id": task_identity(task),
         "request_sha256": digest(request),
         "source_sha256": source_digest(),
+        "browser_plan_sha256": browser_plan_hash(load_local_factory_config()),
         "classification_sha256": digest(task / "classification.json"),
         "skill_selection_sha256": digest(task / "skill-selection.json"),
         "design_contract_sha256": digest(task / "design-contract.json")
@@ -238,16 +249,76 @@ class RejectedRequirementSource(ValueError):
     """An explicitly disallowed observation must not become archived evidence."""
 
 
-def guard_requirement_source(name: str, baseline: dict, *, business_only: bool) -> None:
-    policy = load_local_factory_config()
+def guard_requirement_source(name: str, baseline: dict, *, business_only: bool, policy=None) -> None:
     forbidden = ['.git', '.factory', 'MISSION.md', 'artifacts/factory-local']
-    if business_only:
-        forbidden.extend(Path(item).as_posix().rstrip('/') for item in policy.get('perimeter', []))
-    sensitive = re.search(r'(^|/)(?:\.env(?:\..*)?|\.envrc|\.npmrc|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx|keystore))$', name, re.I)
-    private_config = name in {'.aws/credentials', '.docker/config.json'}
-    if (baseline.get('files', {}).get(name, {}).get('kind') != 'file' or sensitive or private_config
+    if (baseline.get('files', {}).get(name, {}).get('kind') != 'file' or sensitive_path(name)
             or any(name == item or name.startswith(item + '/') for item in forbidden)):
         raise RejectedRequirementSource('需求引用触及未纳入基线、治理或凭据路径；已隔离该需求产物')
+    if business_only:
+        forbidden = canonical_perimeter(load_local_factory_config() if policy is None else policy)
+        if any(name == item or name.startswith(item + '/') for item in forbidden):
+            raise RejectedRequirementSource('需求引用触及未纳入基线、治理或凭据路径；已隔离该需求产物')
+
+
+def quarantine_requirement(task):
+    contract = task / 'requirement-contract.json'
+    safe_artifact_parent(contract)
+    safe_artifact_parent(task / 'requirement.md')
+    original = digest(contract) if not contract.is_symlink() and contract.is_file() else None
+    write_json(contract, {'schema': 'factory-local/rejected-requirement/1', 'task_id': task_identity(task),
+                          'reason': 'disallowed-source; re-run requirement', 'original_contract_sha256': original})
+    atomic_write(task / 'requirement.md', '# 需求产物已隔离\n\n引用了受限来源，请按允许范围重新分析。\n'.encode())
+
+
+def quarantine_disallowed_requirement(task, request, value=None):
+    """Known forbidden references must not escape through an earlier binding error.
+
+    Inspect only typed paths, never quote bodies. Unparseable output is not a DLP scan.
+    """
+    try:
+        value = object_file(task / 'requirement-contract.json') if value is None else value
+        observations = value.get('observations') if isinstance(value, dict) else None
+        if not isinstance(observations, list):
+            return False
+        aliases = {'request', str(request)}
+        if request.is_relative_to(ROOT):
+            aliases.add(request.relative_to(ROOT).as_posix())
+        task_inputs = {'classification.json', 'skill-selection.json', 'design-analysis.md',
+                       'design-contract.json', 'visual-contract.json', 'requirement-docs-context.json'}
+        sources = []
+        for row in observations:
+            if not isinstance(row, dict) or not isinstance(row.get('source'), dict):
+                continue
+            name = row['source'].get('path')
+            if not isinstance(name, str) or name in task_inputs or (row.get('kind') == 'request' and name in aliases):
+                continue
+            if name == 'request':
+                continue
+            try:
+                relative_path(name)
+                # Reject static paths before resolving even a self-referencing link.
+                guard_requirement_source(name, {'files': {name: {'kind': 'file'}}}, business_only=False, policy={})
+                lexical = ROOT / name
+                if (any(p.is_symlink() for p in (lexical, *lexical.parents) if p.is_relative_to(ROOT))
+                        or not lexical.resolve().is_relative_to(ROOT)):
+                    raise ValueError('invalid source path')
+            except (ValueError, RuntimeError, OSError) as exc:
+                raise RejectedRequirementSource('需求来源路径非法；已隔离该需求产物') from exc
+            # Static forbidden paths must be rejected even if Git/configuration has another error.
+            guard_requirement_source(name, {'files': {name: {'kind': 'file'}}}, business_only=False, policy={})
+            sources.append((name, row.get('kind') == 'source' and name not in PUBLIC_CONFIGURATION))
+        baseline = worktree_snapshot(ROOT)
+        policy = object_file(ROOT / '.factory/factory-local.json')
+        for name, business_only in sources:
+            guard_requirement_source(name, baseline,
+                                     business_only=business_only, policy=policy)
+    except RejectedRequirementSource:
+        quarantine_requirement(task)
+        return True
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        # Other malformed output/configuration still fails its ordinary validator.
+        return False
+    return False
 
 
 def _requirement_source(task: Path, request: Path, name: str, *, historical: bool = False, business_only: bool = False) -> Path:
@@ -264,13 +335,13 @@ def _requirement_source(task: Path, request: Path, name: str, *, historical: boo
         path = task_sources[name]
     else:
         if not isinstance(name, str) or Path(name).is_absolute() or ".." in Path(name).parts or "\\" in name:
-            raise ValueError("需求证据路径非法")
+            raise RejectedRequirementSource("需求证据路径非法；已隔离该需求产物")
         lexical = ROOT / name
         if any(p.is_symlink() for p in [lexical, *lexical.parents] if p.is_relative_to(ROOT)):
-            raise ValueError('需求证据不能经过符号链接')
+            raise RejectedRequirementSource('需求证据不能经过符号链接；已隔离该需求产物')
         path = lexical.resolve()
         if not path.is_relative_to(ROOT.resolve()):
-            raise ValueError("需求证据路径越界")
+            raise RejectedRequirementSource("需求证据路径越界；已隔离该需求产物")
         if historical:
             manifest = task/'requirement-source-snapshot.json'
             receipt = object_file(task/'stage-receipts.json').get('requirement', {})
@@ -386,9 +457,7 @@ def validate_requirement(task: Path, request: Path, *, check_source: bool = True
                     historical=not check_source and row['kind'] == 'source', business_only=row['kind'] == 'source')
             except RejectedRequirementSource:
                 # Preserve a diagnostic shell, never archive a rejected quote/body.
-                write_json(contract_path, {'schema': 'factory-local/rejected-requirement/1',
-                    'task_id': task_identity(task), 'reason': 'disallowed-source; re-run requirement'})
-                document.write_text('# 需求产物已隔离\n\n引用了受限来源，请按允许范围重新分析。\n')
+                quarantine_requirement(task)
                 raise
             if quote not in evidence_source.read_text(errors="replace"):
                 errors.append(f"{row['id']}: 证据引用未命中原文")
@@ -471,7 +540,37 @@ def spec_input(task: Path, request: Path) -> dict:
             "clarification_sha256": digest(task / 'clarification-contract.json'),
             "business_sources_sha256": digest(task / 'business-sources.snapshot.json'),
             "skill_selection_sha256": digest(task / "skill-selection.json"),
-            "source_sha256": source_digest()}
+            "source_sha256": source_digest(),
+            "browser_plan_sha256": browser_plan_hash(load_local_factory_config())}
+
+
+def spec_reference_hashes(task: Path, request: Path, references) -> dict:
+    """Bind selected local references to historical bytes; never choose sources."""
+    if not isinstance(references, list):
+        return {}
+    history = task / 'requirement-source-snapshot.json'
+    baseline = object_file(history).get('snapshot', {}) if history.is_file() and not history.is_symlink() else None
+    aliases = {'request', str(request)}
+    if request.is_relative_to(ROOT):
+        aliases.add(str(request.relative_to(ROOT)))
+    hashes = {}
+    for row in references:
+        if not isinstance(row, dict) or not isinstance(row.get('path'), str):
+            continue
+        name = row['path']
+        if name in aliases:
+            hashes[name] = digest(request)
+            continue
+        if baseline is None:
+            raise ValueError('Spec reference 缺少需求源码历史快照；请重跑 requirement')
+        try:
+            relative_path(name)
+            guard_requirement_source(name, baseline, business_only=False)
+        except ValueError:
+            raise ValueError('Spec reference 不在可信业务来源：' + name
+                             + '；仅引用原始 request 或本业务仓普通文件，不引用外部 Skill') from None
+        hashes[name] = baseline['files'][name]['sha256']
+    return hashes
 
 
 def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool = True) -> dict:
@@ -496,7 +595,7 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
         current = spec_input(task, request)
         for key in ("workflow_version", "task_id", "request_sha256", "requirement_sha256",
                     "requirement_contract_sha256", "clarification_sha256", "business_sources_sha256",
-                    "skill_selection_sha256"):
+                    "skill_selection_sha256", "browser_plan_sha256"):
             if contract.get(key) != current[key] or inputs.get(key) != current[key]:
                 errors.append(f"{key} 与当前任务/输入不一致")
         if contract.get("source_sha256") != inputs.get("source_sha256"):
@@ -519,6 +618,9 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
                 continue
             resolved = (ROOT / name).resolve()
             canonical = resolved.relative_to(ROOT.resolve()).as_posix()
+            browser_settings = config.get('browser_executor') or {}
+            if browser_settings.get('plan') and resolved == (ROOT / browser_settings['plan']).resolve():
+                errors.append('浏览器验收计划是只读输入，不能列入 allowed_files')
             if canonical == "." or resolved.is_dir() or name.endswith("/"):
                 errors.append(f"修改范围必须是文件，不能是根目录或目录: {name}")
             for protected in [".factory/", "MISSION.md", *config.get("perimeter", [])]:
@@ -539,7 +641,7 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
                 errors.append("verification 条目须为对象")
                 continue
             vid = item.get("id")
-            if not isinstance(vid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', vid) or vid in verification_ids:
+            if not isinstance(vid, str) or not re.fullmatch(ID_PATTERN, vid) or vid in verification_ids:
                 errors.append("verification.id 缺失或重复")
                 continue
             verification_ids.add(vid)
@@ -547,7 +649,7 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
                 required_verification_ids.add(vid)
             if item.get("status") != "NOT_RUN":
                 errors.append(f"{vid}: Spec 计划状态必须为 NOT_RUN，不能自报测试通过")
-            if item.get("environment") not in {"local", "mock", "test-environment"}:
+            if item.get("environment") not in ENVIRONMENTS:
                 errors.append(f"{vid}: environment 无效")
             if type(item.get("required")) is not bool:
                 errors.append(f"{vid}: 必须明确 required")
@@ -558,13 +660,42 @@ def validate_spec(task: Path, request: Path, config: dict, *, check_source: bool
                 if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and x.strip() for x in argv):
                     errors.append(f"{vid}: 缺少有效 argv")
             elif item.get("kind") == "manual":
-                if item.get('evidence_type') not in {None, 'browser', 'integrity', 'other'}:
+                if item.get('evidence_type') not in (None, *EVIDENCE_TYPES):
                     errors.append(f"{vid}: evidence_type 无效")
                 steps = item.get("steps")
                 if not isinstance(steps, list) or not steps or not all(isinstance(x, str) and x.strip() for x in steps):
                     errors.append(f"{vid}: 缺少人工验证步骤")
             else:
                 errors.append(f"{vid}: kind 无效")
+            if item.get('executor') is not None and not (
+                    item.get('kind') == 'manual' and item.get('evidence_type') == 'integrity'
+                    and item['executor'] == 'source-integrity' and item.get('environment') == 'local'):
+                errors.append(f'{vid}: executor 仅允许本地 integrity 使用 source-integrity')
+        classification = object_file(task / 'classification.json')
+        if classification.get('needs_browser_acceptance') and not any(
+                row.get('required') is True and row.get('kind') == 'manual'
+                and row.get('evidence_type') == 'browser' for row in verification if isinstance(row, dict)):
+            errors.append('需要浏览器验收的 Spec 必须声明 required browser 检查')
+        references = contract.get('references', [])
+        if not isinstance(references, list):
+            errors.append('references 必须为 [{path,sha256}]')
+        else:
+            baseline = object_file(task / 'requirement-source-snapshot.json').get('snapshot', {}) if (
+                task / 'requirement-source-snapshot.json').exists() else worktree_snapshot(ROOT)
+            for reference in references:
+                if not isinstance(reference, dict):
+                    errors.append('references 条目必须为对象')
+                    continue
+                name = reference.get('path')
+                if name in {'request', str(request), str(request.relative_to(ROOT)) if request.is_relative_to(ROOT) else 'request'}:
+                    expected_hash = current['request_sha256']
+                else:
+                    name = relative_path(name)
+                    if name not in spec_reference_hashes(task, request, [reference]):
+                        raise ValueError('Spec reference 不在可信业务来源：' + name)
+                    expected_hash = baseline.get('files', {}).get(name, {}).get('sha256')
+                if not expected_hash or reference.get('sha256') != expected_hash:
+                    errors.append('reference 单文件版本与可信输入不一致：' + str(name))
         acceptance = contract.get("acceptance")
         requirement_contract = object_file(task / "requirement-contract.json")
         requirement_ids = {row["id"] for row in rows(
@@ -835,9 +966,27 @@ def task_identity(task: Path) -> str:
 
 
 def write_json(path: Path, value: object) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    atomic_write(path, (json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode())
+
+
+def safe_artifact_parent(path):
+    if any(parent.is_symlink() for parent in path.parents if parent.is_relative_to(ROOT)):
+        raise ValueError('阶段产物父目录不能经过符号链接：' + path.name)
+
+
+def atomic_write(path, data):
+    """Replace output leaves, never follow a model-created leaf or fixed .tmp link."""
+    safe_artifact_parent(path)
+    mode = stat.S_IMODE(path.stat().st_mode) if not path.is_symlink() and path.is_file() else 0o600
+    fd, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            os.fchmod(output.fileno(), mode)
+            output.write(data)
+        safe_artifact_parent(path)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def interrupt_run(_signum: int, _frame: object) -> None:
@@ -873,6 +1022,8 @@ class Attempt:
         self.directory = task / "attempts" / self.id
         self.directory.mkdir(parents=True)
         self.stage = "setup"
+        self.commands = []
+        self.archival_errors = []
         self.receipts_path = task / "stage-receipts.json"
         self.receipts = {}
         self.state = {"schema": "factory-local/run-state/1", "task_id": self.task_id,
@@ -880,6 +1031,7 @@ class Attempt:
                       "attempt_id": self.id,
                       "authorized_end_stage": self.authorization.get("authorized_end_stage"),
                       "request_sha256": self.request_sha256, "artifact_dir": str(self.directory),
+                      "started_at": now(),
                       "status": "running", "stage": self.stage}
         shutil.copy2(request, self.directory / "request.md")
         for name in ("authorization.json", "task-identity.json", "run-state.json", "stage-receipts.json", "result.json",
@@ -899,11 +1051,15 @@ class Attempt:
 
     def snapshot(self, name: str, folder: str) -> Path | None:
         path = self.task / name
+        safe_artifact_parent(path)
+        if path.is_symlink():
+            raise ValueError('阶段产物不能是符号链接：' + name)
         if not path.is_file():
             return None
         target = self.directory / folder / name
+        safe_artifact_parent(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+        atomic_write(target, path.read_bytes())
         return target
 
     def prepare(self, start: str) -> None:
@@ -958,9 +1114,17 @@ class Attempt:
                 write_json(self.directory / (stage + '-skill.json'), current[stage])
         # Snapshot before publishing a terminal event, so its paths survive retries.
         if status not in {"started", "running"}:
+            if stage == 'requirement' and status not in {'completed', 'passed'}:
+                quarantine_disallowed_requirement(self.task, self.request)
             outputs = {}
             for name in STAGE_OUTPUTS.get(stage, []):
-                target = self.snapshot(name, "outputs")
+                try:
+                    target = self.snapshot(name, "outputs")
+                except ValueError as exc:
+                    if status in {'completed', 'passed', 'unavailable'}:
+                        raise
+                    self.archival_errors.append(str(exc))
+                    continue
                 if target:
                     outputs[name] = digest(target)
             if stage in STAGES and status in {"completed", "passed", "unavailable"}:
@@ -987,19 +1151,42 @@ class Attempt:
 
     def finish(self, status: str, rc: int, **extra: object) -> None:
         if status in {"failed", "interrupted"}:
+            if self.stage == 'requirement':
+                quarantine_disallowed_requirement(self.task, self.request)
             for name in STAGE_OUTPUTS.get(self.stage, []):
-                self.snapshot(name, "partial")
+                try:
+                    self.snapshot(name, "partial")
+                except ValueError as exc:
+                    self.archival_errors.append(str(exc))
         self.save_state(status, rc=rc, **{"resume_from": self.stage, **extra})
         result = self.task / "result.json"
         payload = json.loads(result.read_text()) if result.exists() and status not in {"failed", "interrupted"} else {}
         write_json(result, {**payload, **self.state, "overall_status": status})
         self.snapshot("result.json", "final")
         write_json(self.directory / "state.json", self.state)
+        summary = summarize_attempt(self.directory, self.state, self.commands)
+        summary['archival_errors'] = self.archival_errors
+        verification_path = self.task / 'verification-result.json'
+        if verification_path.is_file():
+            verification = object_file(verification_path)
+            if verification.get('attempt_id') == self.id:
+                summary['verification_counts'] = {
+                    'reused_commands': sum(bool(row.get('reused_from')) for row in verification['verification']),
+                    'executed_spec_commands': sum(row.get('executed') is True for row in verification['verification']),
+                    'browser_status': verification['browser_status'],
+                    'missing_required': verification['missing_required']}
+        write_json(self.directory / 'execution-summary.json', summary)
+        write_json(self.task / 'execution-summary.json', summary)
+        lines = ['# Factory 执行结果', '', f"任务：{self.task_id}；尝试：{self.id}；状态：{status}；退出码：{rc}", '',
+                 '| 阶段 | 状态 | 耗时（秒） |', '| --- | --- | --- |']
+        lines.extend(f"| {row['stage']} | {row['status']} | {row['duration_seconds']:.3f} |" for row in summary['stages'])
+        lines.extend(['', '恢复：' + str(self.state.get('recovery_command')), '', summary['boundary']])
+        (self.directory / 'execution-summary.md').write_text('\n'.join(lines) + '\n')
         write_json(self.directory / "manifest.json", {
             "schema": "factory-local/attempt-manifest/1", "task_id": self.task_id,
             "attempt_id": self.id, "request_sha256": self.request_sha256,
             "files": {str(p.relative_to(self.directory)): digest(p)
-                      for p in sorted(self.directory.rglob("*")) if p.is_file()},
+                      for p in sorted(self.directory.rglob("*")) if p.is_file() and not p.is_symlink()},
         })
 
 
@@ -1024,6 +1211,117 @@ def enforce_scope(task: Path, contract: dict, files: list[str], *, phase: str = 
         raise ValueError('实际修改超出 Spec 范围：' + ', '.join(result['unexpected_files']))
 
 
+def browser_plan_checks(config):
+    settings = config.get('browser_executor')
+    if not settings:
+        return []
+    path = ROOT / relative_path(settings.get('plan'))
+    if (not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(ROOT)
+            or sensitive_path(path.relative_to(ROOT).as_posix())):
+        raise ValueError('浏览器验收计划缺失或越界')
+    plan = object_file(path)
+    if plan.get('schema') != 'factory-local/browser-plan/1':
+        raise ValueError('浏览器验收计划 schema 无效')
+    return [{'id': row['id'], 'environment': row['environment']} for row in plan['checks']]
+
+
+def browser_plan_hash(config):
+    settings = config.get('browser_executor')
+    if not settings:
+        return None
+    name = relative_path(settings.get('plan'))
+    baseline = worktree_snapshot(ROOT)
+    path = ROOT / name
+    if (baseline['files'].get(name, {}).get('kind') != 'file' or sensitive_path(name)
+            or any(p.is_symlink() for p in (path, *path.parents) if p.is_relative_to(ROOT))):
+        raise ValueError('浏览器计划必须是纳入源码基线的普通文件，不能忽略或使用符号链接')
+    return hashlib.sha256(json.dumps({'path': name, 'entry': baseline['files'][name]}, sort_keys=True).encode()).hexdigest()
+
+
+def reuse_quality_command(task, item):
+    """Same-attempt exact-command reuse only, backed by a current archived log."""
+    attempt = ACTIVE_ATTEMPT.get()
+    path = task / 'quality-gate-receipt.json'
+    if not path.is_file():
+        return None
+    receipt = object_file(path)
+    if any(receipt.get(key) != value for key, value in {
+            'task_id': attempt.task_id, 'attempt_id': attempt.id, 'stage': 'verify',
+            'request_sha256': attempt.request_sha256, 'exit_code': 0}.items()):
+        return None
+    detailed = Path(receipt.get('detailed_receipt') or '')
+    if (not detailed.is_file() or detailed.is_symlink() or not detailed.resolve().is_relative_to(attempt.directory.resolve())
+            or digest(detailed) != receipt.get('detailed_receipt_sha256')):
+        return None
+    payload = object_file(detailed)
+    if any(payload.get(key) != value for key, value in {
+            'schema': 'factory-local/quality/2', 'task_id': attempt.task_id,
+            'attempt_id': attempt.id, 'stage': 'verify'}.items()):
+        return None
+    context = command_context(ROOT, item['argv'])
+    if context is None:
+        return None
+    for row in payload.get('results', []):
+        if (row.get('argv') != item['argv'] or row.get('exit_code') != 0 or row.get('command_exit_code') != 0
+                or row.get('integrity_error') or row.get('input_fingerprint') != context
+                or row.get('output_fingerprint') != context):
+            continue
+        log = detailed.parent / Path(row.get('log', '')).name
+        if log.is_file() and not log.is_symlink() and digest(log) == row.get('log_sha256'):
+            return {'status': 'passed', 'environment': 'local', 'exit_code': 0, 'argv': item['argv'],
+                    'executed': False, 'reused_from': {'receipt': str(detailed), 'sha256': digest(detailed),
+                                                     'attempt_id': attempt.id, 'input_fingerprint': context},
+                    'artifacts': [{'path': str(log), 'sha256': digest(log)}]}
+    return None
+
+
+def verification_environment(attempt):
+    """Quality and direct Spec commands observe the same runner-owned trace values."""
+    return {'FACTORY_QUALITY_TASK_ID': attempt.task_id,
+            'FACTORY_QUALITY_ATTEMPT_ID': attempt.id,
+            'FACTORY_QUALITY_STAGE': 'verify'}
+
+
+def automatic_manual_evidence(task, contract, expected, config, results):
+    attempt = ACTIVE_ATTEMPT.get()
+    browser_checks = [row for row in expected['checks'] if any(
+        item['id'] == row['id'] and item.get('evidence_type') == 'browser' for item in contract['verification'])]
+    if browser_checks and config.get('browser_executor'):
+        path = browser_adapter.execute(ROOT, task, attempt.directory / 'browser',
+                                       {**expected, 'checks': browser_checks}, config, run, write_json, digest,
+                                       exclude_ids=set(results))
+        if path:
+            rows, error = read_evidence(expected, path, attempt.directory / 'browser-evidence')
+            if error:
+                raise ValueError('浏览器执行器收据无效：' + error)
+            results.update(rows)
+    integrity = [item for item in contract['verification'] if item.get('executor') == 'source-integrity'
+                 and item['id'] not in results]
+    if integrity:
+        baseline = object_file(task / 'worktree-baseline.json')['snapshot']
+        current = worktree_snapshot(ROOT)
+        if hashlib.sha256(json.dumps(baseline, sort_keys=True, separators=(',', ':')).encode()).hexdigest() != contract['source_sha256']:
+            raise ValueError('完整性执行器基线与 Spec 不一致')
+        changed = changed_files(baseline, current)
+        scope = scope_result(ROOT, contract['scope']['allowed_files'], changed)
+        directory = attempt.directory / 'integrity'
+        directory.mkdir()
+        proof = directory / 'source-integrity.json'
+        protected = sorted(set(baseline['files']) - set(contract['scope']['allowed_files']))
+        write_json(proof, {'task_id': attempt.task_id, 'attempt_id': attempt.id,
+                           'baseline': baseline, 'current': current, 'scope': scope,
+                           'protected_files': protected, 'status': scope['status'],
+                           'boundary': 'HEAD、文件范围、范围外内容/模式/索引；不证明业务语义'})
+        write_json(directory / 'receipt.json', {**expected, 'executor': 'factory-source-integrity', 'checks': [
+            {'id': item['id'], 'environment': 'local', 'status': scope['status'],
+             'artifacts': [{'path': proof.name, 'sha256': digest(proof)}]} for item in integrity]})
+        rows, error = read_evidence(expected, directory / 'receipt.json', attempt.directory / 'integrity-evidence')
+        if error:
+            raise ValueError(error)
+        results.update(rows)
+    return results
+
+
 def verify_spec(task: Path, contract: dict, config: dict, evidence: Path | None,
                 source_hash: str, classification: dict, visual_status: str) -> dict:
     attempt = ACTIVE_ATTEMPT.get()
@@ -1038,12 +1336,17 @@ def verify_spec(task: Path, contract: dict, config: dict, evidence: Path | None,
         if command is None or item['environment'] != 'local':
             results[item['id']] = {'status': 'blocked', 'reason': '命令未登记到可信本地验证入口，未执行'}
             continue
+        reused = reuse_quality_command(task, item)
+        if reused:
+            results[item['id']] = reused
+            continue
         before = worktree_snapshot(ROOT)
         transaction = GeneratedTransaction(ROOT, config.get('generated_files', []),
                                            attempt.directory / f'verification-{index}-generated')
         log = attempt.directory / f'verification-{index}.log'
         try:
-            process = run(command['argv'], log=log, check=False, timeout=900)
+            process = run(command['argv'], log=log, check=False, timeout=900,
+                          env=verification_environment(attempt))
             rc = process.returncode
         except CommandFailure as exc:
             rc = exc.rc
@@ -1052,8 +1355,14 @@ def verify_spec(task: Path, contract: dict, config: dict, evidence: Path | None,
         if changed_files(before, worktree_snapshot(ROOT)):
             raise ValueError('Spec 验证命令改写源码或暂存区，已阻断并保留现场')
         results[item['id']] = {'status': 'passed' if rc == 0 else 'failed', 'environment': 'local',
-                               'exit_code': rc, 'argv': command['argv'],
+                               'exit_code': rc, 'argv': command['argv'], 'executed': True,
                                'artifacts': [{'path': str(log), 'sha256': digest(log)}]}
+    # Run browsers only after commands and review snapshots have settled, never in parallel.
+    if evidence is None or evidence_error is None:
+        results = automatic_manual_evidence(task, contract, expected, config, results)
+        unresolved = [row['id'] for row in expected['checks'] if row['id'] not in results]
+        if not unresolved:
+            evidence_error = None
     result = summarize(contract, results, quality_passed=True, visual_status=visual_status,
                        needs_browser=classification.get('needs_browser_acceptance', False))
     result.update(task_id=attempt.task_id, attempt_id=attempt.id, source_sha256=source_hash,
@@ -1279,6 +1588,10 @@ def load_local_factory_config(path: Path | None = None) -> dict[str, object]:
             "并将远端动作限定为明确的 handoff"
         )
     local_allowed_tools(config)
+    canonical_perimeter(config)
+    repair_limit = config.get('format_repair_limit', 1)
+    if type(repair_limit) is not int or not 0 <= repair_limit <= 2:
+        raise ValueError('format_repair_limit 必须为 0..2')
     if config.get('workflow_version') != WORKFLOW_VERSION or config.get('local_stage_order') != STAGES:
         raise ValueError('Factory 流程配置版本不匹配，须由维护者审核升级，不能跳过新增阶段')
     verify_code(ROOT, config)
@@ -1346,8 +1659,11 @@ def run(
     if log and attempt:
         log = attempt.directory / log.name
     process = None
+    started = now()
+    failure_rc = None
     try:
         process_env = os.environ.copy()
+        process_env['PYTHONDONTWRITEBYTECODE'] = '1'
         if env:
             process_env.update(env)
         process = subprocess.Popen(cmd, cwd=ROOT, text=True, stdout=subprocess.PIPE,
@@ -1357,10 +1673,12 @@ def run(
         stdout, stderr = process.communicate(timeout=timeout)
         p = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
     except OSError as exc:
+        failure_rc = 127
         if log:
             write_log(log, str(exc), cmd)
         raise CommandFailure(cmd, 127, "command_unavailable") from exc
     except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
+        failure_rc = 130 if isinstance(exc, KeyboardInterrupt) else 124
         if process:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -1375,6 +1693,11 @@ def run(
     finally:
         if attempt:
             attempt.save_state("running", active_command=None)
+            attempt.commands.append({'stage': attempt.stage, 'command': cmd[:2],
+                                     'started_at': started, 'finished_at': now(),
+                                     'duration_seconds': (dt.datetime.fromisoformat(now()) - dt.datetime.fromisoformat(started)).total_seconds(),
+                                     'exit_code': failure_rc if failure_rc is not None else process.returncode,
+                                     'log': str(log) if log else None})
     if log:
         write_log(log, p.stdout + p.stderr, cmd)
     if check and p.returncode:
@@ -1434,6 +1757,9 @@ def append_event(path: Path, stage: str, status: str, **extra: object) -> None:
     row = {"time": now(), "stage": stage, "status": status, **extra}
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    if attempt:
+        with (attempt.directory / 'events.jsonl').open('a') as output:
+            output.write(json.dumps(row, ensure_ascii=False) + '\n')
 
 
 def build_omp_command(
@@ -1592,7 +1918,9 @@ def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int
     """
     attempt = ACTIVE_ATTEMPT.get()
     task = attempt.task
-    paths = [task / "authorization.json", task / "task-identity.json", attempt.request]
+    paths = [task / "authorization.json", task / "task-identity.json", attempt.request,
+             ROOT / '.factory/factory-local.json', ROOT / '.factory/runtime-lock.json']
+    paths.extend(attempt.directory.glob(stage + '-format-repair-*.json'))
     paths.extend(task / name for name in ('clarification-answers.json', 'clarification-obligations.json',
                                          'execution-policy.json', 'environment-evidence.json', 'business-sources.snapshot.json'))
     for prior in STAGES[:STAGES.index(stage)]:
@@ -1634,6 +1962,9 @@ def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int
     if stage in capabilities:
         prompt = capabilities[stage]['content'] + '\n\n以下为运行器指定的输入、输出和绑定：\n' + prompt
     before_source = source_digest() if stage != "implement" else None
+    retained_modes = {path: stat.S_IMODE(path.lstat().st_mode) if path.exists() else None for path in retained}
+    if any(path.is_symlink() for path in retained):
+        raise ValueError('阶段输入不能是符号链接')
     try:
         process = omp(stage, prompt, log, model, timeout, config)
     finally:
@@ -1651,10 +1982,16 @@ def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int
                     errors.append(f'模型创建运行器输入: {path.name}')
                     if path.is_file() or path.is_symlink():
                         path.unlink()
-            elif not path.is_file() or path.read_bytes() != expected:
+            elif (not path.is_file() or path.is_symlink() or path.read_bytes() != expected
+                  or stat.S_IMODE(path.lstat().st_mode) != retained_modes[path]):
                 errors.append(f"模型改写运行器输入: {path.name}")
-                temporary = path.with_name(path.name + ".restore.tmp")
-                temporary.write_bytes(expected)
+                if any(parent.is_symlink() for parent in path.parents):
+                    errors.append('输入父目录变成符号链接，拒绝跨目录恢复')
+                    continue
+                temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.restore.tmp')
+                with temporary.open('xb') as output:
+                    output.write(expected)
+                temporary.chmod(retained_modes[path])
                 temporary.replace(path)
         if docs_path:
             changes = docs_module().check(ROOT, json.loads(retained[docs_path]), config.get("docs_context"), {
@@ -1677,6 +2014,47 @@ def run_model_stage(stage: str, prompt: str, log: Path, model: str, timeout: int
                     "boundary": "模型阶段输入完整性检查失败，不能通过 Spec 门禁"})
             raise ValueError("阶段输入完整性失败: " + "; ".join(errors))
     return process
+
+
+def generate_contract_stage(stage, prompt, log, args, config, binding):
+    """Repair syntax only. Binding conflicts and semantic validation remain fail-closed."""
+    attempt = ACTIVE_ATTEMPT.get()
+    target = attempt.task / (stage + '-contract.json' if stage != 'clarification' else 'clarification-contract.json')
+    limit = config.get('format_repair_limit', 1)
+    prompt += '\n运行器自动补齐 schema、输入绑定和缺失的 NOT_RUN；不要计算摘要，不要声明已验证。'
+    for index in range(limit + 1):
+        run_model_stage(stage, prompt, log if index == 0 else log.with_name(f'{stage}-format-repair-{index}.log'),
+                        args.model, args.stage_timeout, config)
+        try:
+            data = target.read_bytes()
+            # Requirement content is untrusted until source guards have accepted it.
+            # Keep its original digest below, never a second unquarantined raw body.
+            if stage != 'requirement':
+                (attempt.directory / f'{stage}-model-output-{index}.json').write_bytes(data)
+            try:
+                value = json.loads(data)
+            except (ValueError, UnicodeError) as exc:
+                raise ContractFormatError('契约 JSON 语法无效') from exc
+            if stage == 'requirement' and quarantine_disallowed_requirement(attempt.task, attempt.request, value):
+                raise RejectedRequirementSource('需求引用受限来源；已在机械补全前隔离')
+            reference_hashes = spec_reference_hashes(attempt.task, attempt.request, value.get('references', [])) if (
+                stage == 'spec' and isinstance(value, dict)) else None
+            completed, filled = complete_contract(stage, value, binding, reference_hashes=reference_hashes)
+            write_json(target, completed)
+            write_json(attempt.task / (stage + '-contract-completion.json'), {
+                'task_id': attempt.task_id, 'attempt_id': attempt.id,
+                'original_sha256': hashlib.sha256(data).hexdigest(), 'completed_sha256': digest(target),
+                'filled_fields': filled, 'format_repairs': index})
+            return
+        except (FileNotFoundError, ContractFormatError) as exc:
+            if index == limit:
+                raise ValueError('契约格式修复次数已达上限：' + str(exc)) from exc
+            diagnostic = attempt.directory / f'{stage}-format-repair-{index + 1}.json'
+            write_json(diagnostic, {'schema': 'factory-local/format-repair/1', 'task_id': attempt.task_id,
+                                   'attempt_id': attempt.id, 'stage': stage, 'error': str(exc),
+                                   'role': 'format-only; not authority, business rules or approval'})
+            prompt += ('\n只修复格式诊断 ' + str(diagnostic)
+                       + '。保持业务内容、范围、验收义务和引用关系；未知业务规则必须澄清，不自动补决定。')
 
 
 def required(path: Path) -> None:
@@ -2308,6 +2686,17 @@ def write_remote_handoff(
 
 
 def main(argv: list[str] | None = None) -> int:
+    if (sys.argv[1:] if argv is None else argv) in (['--help'], ['-h']):
+        return _main(argv)
+    try:
+        with RepositoryLease(ROOT):
+            return _main(argv)
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        print('Factory 执行被阻断：' + str(exc), file=sys.stderr)
+        return 2
+
+
+def _main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="本地 Factory：需求分析 -> spec -> AI 编码 -> 本地验证")
     ap.add_argument("--task", required=True, help="任务目录名，例如 20261016-callback-ui")
     ap.add_argument("--request-file", required=True, type=Path, help="需求输入文件")
@@ -2341,6 +2730,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.revision_of and (args.resume or args.from_stage or args.only_stage):
         ap.error('--revision-of 仅登记修订，不与恢复/阶段执行混用')
     base = (ROOT / "artifacts" / "factory-local").resolve()
+    if not base.is_relative_to(ROOT):
+        ap.error('Factory 任务产物必须位于项目内，不能通过符号链接指向项目外')
     task = (base / args.task).resolve()
     if not task.is_relative_to(base) or task == base:
         ap.error("--task 必须位于 artifacts/factory-local 内")
@@ -2633,16 +3024,14 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
     if start <= stages.index('requirement') <= end:
         write_json(task / "requirement-input.json", requirement_input(task, request))
         append_event(events, "requirement", "started")
-        run_model_stage(
+        generate_contract_stage(
             "requirement",
             f"""执行已加载的 factory-requirement-analysis。
 运行器输入：{task / 'requirement-input.json'}；原始需求：{request}；分类：{classification_path}；技能选择：{skill_selection}。
 若存在设计分析则读取：{design_analysis}。按 Skill 协议只生成 {requirement} 和 {task / 'requirement-contract.json'}。
-逐字复制 requirement-input 绑定；不要修改业务代码、治理文件、答复或后续阶段产物。""",
+绑定由运行器补齐；不要修改业务代码、治理文件、答复或后续阶段产物。""",
             task / "requirement.log",
-            args.model,
-            args.stage_timeout,
-            config,
+            args, config, object_file(task / 'requirement-input.json'),
         )
         required(requirement)
         required(task / "requirement-contract.json")
@@ -2661,12 +3050,12 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
                            if (task / 'clarification-answers.json').is_file() else None}
         source_index = [{key: row[key] for key in ('id', 'path', 'version', 'scope_paths')}
                         for row in frozen_sources.get('sources', [])]
-        run_model_stage('clarification', f"""执行已加载的 factory-clarification，使用 Factory 节点模式。
+        generate_contract_stage('clarification', f"""执行已加载的 factory-clarification，使用 Factory 节点模式。
 读取原始需求 {request}、已校验需求契约 {task / 'requirement-contract.json'}、人读分析 {requirement}、已有显式答复 {task / 'clarification-answers.json'}（若存在）和冻结业务来源 {task / 'business-sources.snapshot.json'}。
 按 Skill 协议只生成 {task / 'clarification-contract.json'}，schema={CLARIFICATION}；原样复制绑定字段 {json.dumps(clarity_binding, ensure_ascii=False)}。
 逐项解析 requirement behavior_candidates；可引用来源索引：{json.dumps(source_index, ensure_ascii=False)}，正文只从冻结快照读取。
 不要修改代码、需求分析、治理配置、答复或后续阶段产物。""",
-                        task / 'clarification.log', args.model, args.stage_timeout, config)
+                        task / 'clarification.log', args, config, clarity_binding)
         business_sources(task, request, config)
         clarity = validate_clarification(task, request, task_identity(task))
         write_json(task / 'clarification-result.json', clarity)
@@ -2686,17 +3075,17 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
     if start <= stages.index('spec') <= end:
         write_json(task / "spec-input.json", spec_input(task, request))
         append_event(events, "spec", "started")
-        run_model_stage(
+        generate_contract_stage(
             "spec",
             f"""执行已加载的 factory-spec-authoring。
 读取 {task / 'spec-input.json'}、{task / 'requirement-contract.json'}、{task / 'clarification-contract.json'}、{skill_selection} 和相关设计/接口契约。
-按 Skill 协议只生成 {spec} 与 {task / 'spec-contract.json'}，schema=factory-local/spec-contract/2；逐字复制 spec-input 的全部绑定。
+按 Skill 协议只生成 {spec} 与 {task / 'spec-contract.json'}；运行器补齐全部绑定与缺失的 NOT_RUN。
 命令 argv 只能原样选择维护者可信清单：{json.dumps([item['argv'] for item in trusted_commands(config).values()], ensure_ascii=False)}。
+浏览器计划（已由维护者提供时优先沿用对应 verification ID）：{json.dumps(browser_plan_checks(config), ensure_ascii=False)}。
+源码范围与治理完整性可用 manual/evidence_type=integrity/environment=local/executor=source-integrity 验证；此执行器不证明业务语义。
 若存在 {task / 'revision.json'}，保留全部父任务必验义务并重新验证。不要修改源码、治理文件、spec-input 或授权。""",
             task / "spec.log",
-            args.model,
-            args.stage_timeout,
-            config,
+            args, config, object_file(task / 'spec-input.json'),
         )
         required(spec)
         validate_spec(task, request, config)
@@ -2814,11 +3203,7 @@ def execute_pipeline(args: argparse.Namespace, task: Path, events: Path, request
             gate_command,
             log=task / "final-gate.log",
             check=False,
-            env={
-                'FACTORY_QUALITY_TASK_ID': current_attempt.task_id,
-                'FACTORY_QUALITY_ATTEMPT_ID': current_attempt.id,
-                'FACTORY_QUALITY_STAGE': 'verify',
-            },
+            env=verification_environment(current_attempt),
         )
         bind_quality_gate_receipt(task, gate, gate_command)
         if verification_source != source_digest():

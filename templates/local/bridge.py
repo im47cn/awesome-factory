@@ -17,7 +17,8 @@ def resolve(project):
     files = lock.get('files')
     required = {'runtime/local/' + name for name in (
         '__init__.py', 'bootstrap.py', 'runner.py', 'workflow.py', 'acceptance.py',
-        'worktree.py', 'revisions.py', 'business_sources.py', 'quality.py', 'skills.py', 'docs_context.py', 'figma.py')}
+        'worktree.py', 'revisions.py', 'business_sources.py', 'quality.py', 'skills.py', 'docs_context.py', 'figma.py',
+        'policy.py', 'protocol.py', 'execution.py', 'browser.py', 'browser-driver.mjs')}
     required.update({'tools/factory-local-setup.py', 'tools/factory-local-lock.py'})
     if not isinstance(files, dict) or set(files) != required:
         raise ValueError('Factory runtime lock 文件清单缺失或不兼容')

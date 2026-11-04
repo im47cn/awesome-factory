@@ -19,6 +19,9 @@ import sys
 import uuid
 
 SOURCE = Path(__file__).resolve().parents[1]
+_lease_spec = importlib.util.spec_from_file_location('_factory_setup_lease', SOURCE / 'runtime/local/execution.py')
+_lease_module = importlib.util.module_from_spec(_lease_spec)
+_lease_spec.loader.exec_module(_lease_module)
 IGNORE = '\n# Factory local runtime (shared config/programs remain tracked)\n/artifacts/factory-local/\n/.factory/**/__pycache__/\n/.factory/__pycache__/\n/.factory/*.pyc\n'
 
 
@@ -214,8 +217,13 @@ def ensure_excludes(repo):
         exclude = repo / exclude
     exclude.parent.mkdir(parents=True, exist_ok=True)
     content = exclude.read_text() if exclude.exists() else ''
-    if '/artifacts/factory-local/' not in content:
-        exclude.write_text(content + IGNORE)
+    patterns = [line for line in IGNORE.splitlines() if line.startswith('/')]
+    missing = [pattern for pattern in patterns if pattern not in content.splitlines()]
+    if missing:
+        exclude.write_text(content + '\n# Factory local generated files\n' + '\n'.join(missing) + '\n')
+    for probe in ('artifacts/factory-local/probe.json', '.factory/__pycache__/probe.pyc', '.factory/tests/__pycache__/probe.pyc'):
+        if subprocess.run(['git', 'check-ignore', '-q', '--', probe], cwd=repo).returncode != 0:
+            raise ValueError('Factory 产物排除规则未生效：' + probe)
 
 
 def check(repo, audit):
@@ -268,7 +276,7 @@ def main(argv=None):
             raise ValueError('请指定 Git 仓库根目录')
         common = Path(git(repo, 'rev-parse','--path-format=absolute','--git-common-dir'))
         # Single writer for onboarding/verification; normal source work is not modified.
-        with (common / 'factory-onboarding.lock').open('a') as lock:
+        with _lease_module.RepositoryLease(repo, 'setup'), (common / 'factory-onboarding.lock').open('a') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:

@@ -21,7 +21,13 @@ import pytest
 SOURCE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SOURCE / 'tests/local'))
 from support import prepare
-from test_acceptance import FactoryCase
+# Pytest also collects .factory/tests/test_acceptance.py under the short name.
+# Load the local-runner fixture by path so collection order cannot choose it.
+_case_spec = importlib.util.spec_from_file_location(
+    'factory_local_acceptance_fixture', SOURCE / 'tests/local/test_acceptance.py')
+_case_module = importlib.util.module_from_spec(_case_spec)
+_case_spec.loader.exec_module(_case_module)
+FactoryCase = _case_module.FactoryCase
 from runtime.local import runner as factory
 MODULE = SOURCE / 'templates/local/run.py'
 
@@ -41,7 +47,7 @@ def make_spec(factory, task):
     if classification.get('needs_browser_acceptance'):
         value = json.loads((task / 'spec-contract.json').read_text())
         value['acceptance'][0]['verification_ids'].append('V-B')
-        value['verification'].append({'id':'V-B', 'kind':'manual', 'environment':'mock',
+        value['verification'].append({'id':'V-B', 'kind':'manual', 'evidence_type':'browser', 'environment':'mock',
                                      'required':True, 'status':'NOT_RUN', 'steps':['Observe the mock page behavior']})
         factory.write_json(task / 'spec-contract.json', value)
 
@@ -396,7 +402,7 @@ def test_backend_without_browser_requirement_can_complete(runtime):
 def test_partial_stage_does_not_claim_task_complete(runtime):
     assert runtime.invoke("--only-stage", "spec") == 0
     assert runtime.read("result.json")["overall_status"] == "stage_completed"
-    assert runtime.read("run-state.json")["resume_from"] == "preflight"
+    assert runtime.read("run-state.json")["resume_from"] == "spec-review"
     assert "implement" not in runtime.calls
 
 
@@ -518,7 +524,7 @@ def test_source_change_during_verification_invalidates_results(runtime):
 @pytest.mark.parametrize("failure", [KeyboardInterrupt(), factory.CommandFailure(["omp", "--print"], 124, "timeout"),
                                      factory.CommandFailure(["omp", "--print"], 127, "command_unavailable")])
 def test_interrupt_timeout_and_launch_failure_are_recorded_with_recovery(runtime, monkeypatch, failure):
-    assert runtime.invoke("--only-stage", "spec") == 0
+    assert runtime.invoke("--only-stage", "preflight") == 0
     original = factory.omp
 
     def fail(*args, **kwargs):
@@ -535,7 +541,7 @@ def test_interrupt_timeout_and_launch_failure_are_recorded_with_recovery(runtime
 
 
 def test_hard_interruption_running_state_can_resume(runtime):
-    assert runtime.invoke("--only-stage", "spec") == 0
+    assert runtime.invoke("--only-stage", "spec-review") == 0
     state = runtime.read("run-state.json")
     state.update(status="running", resume_from="preflight")
     factory.write_json(runtime.task / "run-state.json", state)
@@ -561,7 +567,13 @@ def test_manifest_and_event_paths_survive_fresh_restart(runtime):
     for name, expected in manifest["files"].items():
         assert factory.digest(archived / name) == expected
     old_events = runtime.events()
-    assert runtime.invoke() == 3
+    source = (runtime.root / 'source.txt').read_bytes()
+    runtime.calls.clear()
+    # A fresh replay cannot rebind an already implemented task to new source.
+    assert runtime.invoke() == 2
+    assert '基线与 Spec 源码绑定不一致' in runtime.read('run-state.json')['reason']
+    assert 'implement' not in runtime.calls
+    assert (runtime.root / 'source.txt').read_bytes() == source
     for event in old_events:
         if event.get("artifact"):
             assert archived in Path(event["artifact"]).parents
@@ -680,7 +692,7 @@ if stage == 'spec':
         'external_requirements': []}))
 ''')
     fake_omp.chmod(0o755)
-    assert runtime.invoke('--only-stage', 'spec') == 0
+    assert runtime.invoke('--only-stage', 'spec-review') == 0
     ready = runtime.root.parent / "ready"
     env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
            "TEST_TASK": str(runtime.task), "TEST_READY": str(ready), "TEST_PAUSE": "1"}
@@ -763,7 +775,7 @@ def test_only_explicit_authorization_can_enter_implementation(runtime):
     task_id = runtime.read('run-state.json')['task_id']
     runtime.calls.clear()
     assert runtime.invoke('--resume', '--authorize-through', 'implement', authorize=False) == 0
-    assert runtime.calls == ['implement']
+    assert runtime.calls == ['spec-review', 'implement']
     assert runtime.read('run-state.json')['task_id'] == task_id
     assert runtime.read('run-state.json')['status'] == 'awaiting_authorization'
     assert runtime.read('authorization.json')['grants'][-1]['through'] == 'implement'
@@ -777,8 +789,8 @@ def test_analysis_mode_preserves_frontend_browser_requirement(runtime):
     assert classification['execution_mode'] == 'analysis'
     assert classification['route'] == 'frontend-no-design'
     assert classification['needs_browser_acceptance'] is True
-    assert runtime.read('run-state.json')['authorized_end_stage'] == 'spec'
-    assert runtime.calls == ['requirement', 'clarification', 'spec']
+    assert runtime.read('run-state.json')['authorized_end_stage'] == 'spec-review'
+    assert runtime.calls == ['requirement', 'clarification', 'spec', 'spec-review']
 
 
 @pytest.mark.parametrize('request_text,domain', [
@@ -832,7 +844,20 @@ def test_nonempty_but_invalid_spec_is_blocked(runtime, monkeypatch, damage):
         factory.write_json(file, data)
     monkeypatch.setattr(factory, 'omp', generate)
     assert runtime.invoke('--only-stage', 'spec', authorize=False) == 2
-    assert runtime.read('spec-validation.json')['status'] == 'blocked'
+    early_rejections = {
+        'missing': '契约格式修复次数已达上限',
+        'task_id': '模型提供了冲突的运行器绑定：task_id',
+        'request_hash': '模型提供了冲突的运行器绑定：request_sha256',
+        'requirement_hash': '模型提供了冲突的运行器绑定：requirement_sha256',
+        'test_passed': 'Spec 不能自报已执行结果',
+        'external': '契约格式修复次数已达上限',
+    }
+    if damage in early_rejections:
+        state = runtime.read('run-state.json')
+        assert state['status'] == 'failed' and state['stage'] == 'spec'
+        assert early_rejections[damage] in state['reason']
+    else:
+        assert runtime.read('spec-validation.json')['status'] == 'blocked'
     assert 'spec' not in runtime.read('stage-receipts.json')
     assert 'implement' not in runtime.calls
 
@@ -854,11 +879,11 @@ def test_classifier_only_does_not_exceed_early_ceiling(runtime):
 
 
 @pytest.mark.parametrize("text", ["Vue 页面，先不要修改文件", "先不要实现，分析 Vue 页面问题", "只分析后端接口"])
-def test_negative_execution_intent_keeps_spec_ceiling(runtime, text):
+def test_negative_execution_intent_keeps_analysis_ceiling(runtime, text):
     runtime.request.write_text(text)
     assert runtime.invoke(authorize=False) == 0
-    assert runtime.read("run-state.json")["authorized_end_stage"] == "spec"
-    assert runtime.calls == ["requirement", "clarification", "spec"]
+    assert runtime.read("run-state.json")["authorized_end_stage"] == "spec-review"
+    assert runtime.calls == ["requirement", "clarification", "spec", "spec-review"]
 
 
 def test_malformed_spec_input_still_produces_blocked_receipt(runtime):
@@ -885,13 +910,14 @@ def test_all_optional_verifications_cannot_satisfy_acceptance(runtime):
 def test_model_cannot_widen_authorization_even_when_it_fails(runtime, monkeypatch, stage, model_fails):
     original = factory.omp
     def generate(current, *args, **kwargs):
-        original(current, *args, **kwargs)
+        result = original(current, *args, **kwargs)
         if current == stage:
             data = runtime.read('authorization.json')
             data['authorized_end_stage'] = 'verify'
             factory.write_json(runtime.task / 'authorization.json', data)
             if model_fails:
                 raise RuntimeError('model failure after unauthorized write')
+        return result
     monkeypatch.setattr(factory, 'omp', generate)
     ceiling = 'implement' if stage == 'implement' else 'spec'
     assert runtime.invoke('--only-stage', ceiling, authorize=False) == 2

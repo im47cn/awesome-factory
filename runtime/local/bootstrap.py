@@ -14,7 +14,14 @@ API_VERSION = 'factory-local/runtime/1'
 def load(project: Path):
     project = project.resolve()
     name = '_factory_local_' + uuid.uuid4().hex
-    directory = Path(__file__).resolve().parent
+    execution_spec = importlib.util.spec_from_file_location('_factory_execution_' + uuid.uuid4().hex,
+                                                          Path(__file__).with_name('execution.py'))
+    execution = importlib.util.module_from_spec(execution_spec)
+    execution_spec.loader.exec_module(execution)
+    config = json.loads((project / '.factory/factory-local.json').read_text())
+    source = (project / config['upstream_path']).resolve()
+    lock = json.loads((project / '.factory/runtime-lock.json').read_text())
+    directory = execution.freeze_runtime(project, source, lock) / 'runtime/local'
     spec = importlib.util.spec_from_file_location(name, directory / '__init__.py',
                                                 submodule_search_locations=[str(directory)])
     package = importlib.util.module_from_spec(spec)
@@ -48,13 +55,24 @@ def execute(component: str, project: Path, argv: list[str]) -> int:
         runner.verify_code(project, config)
         lock = json.loads((project / '.factory/runtime-lock.json').read_text())
         pinned = lock.get('test_files', {})
-        actual = {p.relative_to(source).as_posix() for directory in ('tests/local', 'templates/local') for p in (source / directory).glob('*.py')} | {'.factory/guard.py', 'tools/evaluate-clarification.py'}
+        actual = {p.relative_to(source).as_posix() for directory in ('tests/local', 'templates/local') for p in (source / directory).glob('*.py')} | {
+            '.factory/guard.py', 'tools/evaluate-clarification.py', 'tools/evaluate-spec-quality.py', 'tools/factory-local-workspace.py'}
         if not pinned or set(pinned) != actual:
             raise ValueError('公共回归清单缺失或漂移')
         for name, expected in pinned.items():
             path = source / name
             if path.is_symlink() or not path.resolve().is_relative_to(source) or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 raise ValueError('公共回归输入已变化：' + name)
+        rule_files = lock.get('test_rules_files', {})
+        rules = runner.AWESOME_RULES_ROOT
+        rule_actual = {p.relative_to(rules).as_posix() for skill in ('factory-clarification', 'factory-spec-review')
+                       for p in (rules / 'skills' / skill / 'evals').rglob('*') if p.is_file() and not p.is_symlink()}
+        if not rule_files or set(rule_files) != rule_actual:
+            raise ValueError('Rules 回归夹具清单缺失或漂移')
+        for name, expected in rule_files.items():
+            path = rules / name
+            if path.is_symlink() or not path.resolve().is_relative_to(rules) or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise ValueError('Rules 回归夹具已变化：' + name)
         commands = [[sys.executable, '-m', 'unittest', 'discover', '-s', str(source / 'tests/local'), '-v'],
                     [sys.executable, '-m', 'unittest', 'discover', '-s', str(project / '.factory/tests'), '-v']]
         for command in commands:

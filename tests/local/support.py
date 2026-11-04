@@ -31,6 +31,8 @@ def prepare(root, config):
         target.mkdir(parents=True, exist_ok=True)
         shutil.copy2(rules / 'skills' / name / 'SKILL.md', target / 'SKILL.md')
         shutil.copytree(rules / 'skills' / name / 'references', target / 'references', dirs_exist_ok=True)
+        if (rules / 'skills' / name / 'evals').is_dir():
+            shutil.copytree(rules / 'skills' / name / 'evals', target / 'evals', dirs_exist_ok=True)
     (root / '.factory').mkdir(exist_ok=True)
     for name in ('run.py', 'quality-gate.py', 'bridge.py', 'setup.py'):
         shutil.copy2(SOURCE / 'templates/local' / name, root / '.factory' / name)
@@ -41,9 +43,10 @@ def prepare(root, config):
     # project .rules may be outside a Git tree before fixture initialization.
     files = {name: module.sha(SOURCE / name) for name in module.FILES}
     skills = {p.relative_to(root / '.rules').as_posix(): module.sha(p)
-              for name in config['workflow_skills'].values()
-              for p in (root / '.rules/skills' / name).rglob('*.md')}
+              for p in module.skill_inputs(root / '.rules', config['workflow_skills'])}
     (root / '.factory/runtime-lock.json').write_text(json.dumps({
         'api_version': 'factory-local/runtime/1', 'workflow_version':'factory-local/workflow/4',
         'files': files, 'skills': skills,
-        'test_files': {p.relative_to(SOURCE).as_posix(): module.sha(p) for p in module.test_inputs(SOURCE)}}))
+        'test_files': {p.relative_to(SOURCE).as_posix(): module.sha(p) for p in module.test_inputs(SOURCE)},
+        'test_rules_files': {p.relative_to(root / '.rules').as_posix(): module.sha(p)
+                            for p in module.rule_test_inputs(root / '.rules')}}))
