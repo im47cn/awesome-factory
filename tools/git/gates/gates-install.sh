@@ -199,7 +199,7 @@ while read -r src dst; do
 done < <(list_face local)
 
 # ── ④ lefthook.yml pre-push mutation-gate job 注入（幂等; 检测/注入均限定 pre-push 段） ──
-# run 链语义: awesome-rules 删除防护契约——纯删除推送 exit 0 短路跳过门禁(sourcery/
+# run 链语义: awesome-factory 删除防护契约——纯删除推送 exit 0 短路跳过门禁(sourcery/
 # coderabbit job 同款既定语义), 正常推送/读取异常 exit 1 门禁照跑, 故 || 链在正常推送
 # 必然落 mutation-gate; 不用 {push_files}: 新分支首推无 @{push} 引用时 lefthook 展开
 # 即失败绑架首推, 且 mutation-gate.sh 自算 diff 基线无需文件清单实参
@@ -212,7 +212,7 @@ done < <(list_face local)
 # 门禁」的包装（先例: portal chore/gates-align-docs 分支）。
 JOB_BLOCK='    mutation-gate:
       use_stdin: true
-      # 删除防护极性契约: guard 0=纯删除推送→短路跳过门禁(awesome-rules 既定语义);
+      # 删除防护极性契约: guard 0=纯删除推送→短路跳过门禁(awesome-factory 既定语义);
       # guard 1=正常推送/读取异常(fail-open)→|| 落本门禁, 退出码即 job 退出码
       run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/mutation-gate.sh'
 
@@ -285,14 +285,14 @@ PY
 LW="$REPO/lefthook.yml"
 if [ "$MODE" = install ]; then
   if [ ! -f "$LW" ]; then
-    echo "⚠ [gates] 无 lefthook.yml（先经 awesome-rules install.sh 初始化）; 请手动挂 pre-push mutation-gate job"
+    echo "⚠ [gates] 无 lefthook.yml（先经 awesome-factory install.sh 初始化）; 请手动挂 pre-push mutation-gate job"
   else
     guard_dest "$LW"
     lw_job "$LW" inject "$JOB_BLOCK" || { echo "✗ [gates] lefthook.yml job 注入失败"; fail=1; }
   fi
 else
   if [ ! -f "$LW" ]; then
-    echo "✗ [gates] lefthook.yml 缺席: pre-push mutation-gate job 无处挂载（--check 失败; 先经 awesome-rules install.sh 初始化）"
+    echo "✗ [gates] lefthook.yml 缺席: pre-push mutation-gate job 无处挂载（--check 失败; 先经 awesome-factory install.sh 初始化）"
     fail=1
   elif lw_job "$LW" check "$JOB_BLOCK" >/dev/null 2>&1; then
     echo "✔ [gates] lefthook.yml pre-push mutation-gate job 在位"

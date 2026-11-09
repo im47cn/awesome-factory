@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gates 面确定性测试（周界 PR 验证门, Q10; 仿 awesome-rules tools/test_* 先例）
+# gates 面确定性测试（周界 PR 验证门, Q10; 仿 awesome-factory tools/test_* 先例）
 # 用法: bash tools/git/gates/gates-tests/test_mutation-gate.sh
 # 覆盖: 语言分派跳过链(T1-T4/T7/T9) / --ci 契约位 fail-closed(T6) / 接入不完整
 #       fail-closed(T5) / 外部 143 不放行·真看门狗放行·预算非法·纯删除·空白路径
