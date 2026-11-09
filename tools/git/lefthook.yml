@@ -1,0 +1,56 @@
+# 由 awesome-factory tools/git/install.sh 分发 —— 入库共享，hook 由 lefthook 管理
+# 规范事实源：awesome-factory 仓库 steering/git-conventions.md + 覆盖率红线「变更行 java ≥98% / python・ts ≥90%，java 全量行/分支 ≥98%」
+# 团队成员激活：npm i -g lefthook && lefthook install（或跑一次 install.sh）
+# 占位符 {staged_files}/{push_files} 是触发条件：有对应文件变更才执行（lefthook 2.x 无占位符恒 skip）
+commit-msg:
+  commands:
+    commitmsg:
+      run: bash .lefthook/commitmsg-check.sh {1}
+
+# 覆盖率红线（变更行 java ≥98% / python・ts ≥90%；java 全量行/分支 ≥98%，口径见 steering/testing-standards.md「覆盖率阈值」）
+pre-commit:
+  commands:
+    coverage-light:
+      run: bash .lefthook/coverage.sh light {staged_files}
+    # spec 条款↔测试反向核对: 提交含 spec*.md 时验证条款均有测试（有 spec 变更才触发）
+    spec-check:
+      run: bash .lefthook/spec-check.sh {staged_files}
+    # 业务仓自有 lint-staged 配置（package.json "lint-staged" 字段或 .lintstagedrc*）才执行，
+    # 无配置仓零打扰（条件在 run 内自判，不依赖 lefthook skip 指令——v2 手动 run 下实测不生效）。
+    # 内置进模板的动因：仓内自定义命令会被 install.sh --update 整文件覆盖抹掉
+    # （2026-10-13 admin 仓 pre-commit 失去 eslint --fix，CI lint:ci --max-warnings 0 拦截实证）。
+    lint-staged:
+      run: sh -c '( ls .lintstagedrc* >/dev/null 2>&1 || grep -qs "\"lint-staged\"" package.json ) || exit 0; npx lint-staged'
+
+pre-push:
+  # 2026-09-05 决策（@_user_1）: 先跑测试、通过后再跑覆盖率——lefthook 串行执行按
+  # 命令名字母序（priority 0/缺省=最后），tests 与 coverage-full 均跑全量 pytest
+  # （含 pyproject.toml 的仓 coverage-full 跑 pytest --cov），须 tests 先行；piped 链:
+  # tests 失败 → coverage-full 不跑。sourcery/coderabbit 无依赖走 tier 0。
+  # 纯删除 push（git push <remote> --delete <branch>）不触发任何门禁：{push_files} 实为
+  # git diff HEAD @{push}（lefthook internal/git/repo.go PushFiles），与本次推送内容无关，
+  # 删远程分支时若本地同名分支领先会误触发全部门禁。各命令前置 pre-push-delete-guard.sh
+  # （命令须 use_stdin: true 才能收到 stdin）：所有行 local SHA 全零 = 纯删除 → 守卫
+  # exit 0 短路该门禁；守卫缺失/读取失败/行格式异常一律 fail-open（exit 1），门禁照常
+  # 执行。手动 `lefthook run pre-push` 须以 </dev/null 结尾（use_stdin 急切捕获 stdin，
+  # TTY 下阻塞等 EOF；真实 push 由 git 关闭管道，无此问题）。
+  piped: true
+  commands:
+
+    # 项目自定义测试入口: 有 scripts/pre-push-tests.sh 则执行（全量测试/构建检查等），无则跳过
+    tests:
+      priority: 1
+      use_stdin: true
+      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/run-tests.sh {push_files}
+    coverage-full:
+      priority: 2
+      use_stdin: true
+      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/coverage.sh full {push_files}
+    # Sourcery 硬闸: 仓库 opt-in（.sourcery.yaml 存在）才启用，支持语言（CLI 实测 py/ts/js）push 前 review --check
+    sourcery-gate:
+      use_stdin: true
+      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/sourcery-gate.sh {push_files}
+    # CodeRabbit 建议性评审: 仓库 opt-in（.coderabbit.yaml 存在）才启用，push 时后台 --light 评审已提交变更（异步不阻塞、不拦 push）
+    coderabbit-gate:
+      use_stdin: true
+      run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/coderabbit-gate.sh {push_files}

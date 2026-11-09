@@ -4,7 +4,7 @@
 #   --ci  CI 全量档（v2 契约预留，未交付——fail-closed 拒绝执行而非假装跑过）
 # 语言分派: 读仓根 .lefthook-profile 声明（gates-install.sh 安装时探测生成，人工可覆写；
 #   多语言逗号分隔，含 java/ts 各走各分支，互不干扰）
-#   java → PIT 红线（awesome-rules 迁入; PIT 执行契约不变, 模块判定升级为变更文件
+#   java → PIT 红线（awesome-factory 迁入; PIT 执行契约不变, 模块判定升级为变更文件
 #          全路径向上最近 pom.xml——修复嵌套 Maven 模块漏检）
 #   ts   → StrykerJS 快速档: diff 驱动只变异本次变更文件、--incremental 增量、
 #          预算封顶（默认 180s，MUTATION_GATE_BUDGET 可调, 须正整数秒）；
@@ -67,7 +67,7 @@ kill_tree() {
   kill "$1" 2>/dev/null
 }
 
-# ── Java 分支: PIT 红线（PIT 执行契约自 awesome-rules 原样保留） ──────────────
+# ── Java 分支: PIT 红线（PIT 执行契约自 awesome-factory 原样保留） ──────────────
 if [ "$want_java" = 1 ]; then
   # 非阻断告警: 删除测试文件会削弱断言强度，本门禁不拦纯测试变更，
   # 弱化在下次生产代码变更时由 mutationThreshold 兜底吸收 —— 删除意图请走 MR/评审自行把关
