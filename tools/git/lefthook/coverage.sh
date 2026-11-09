@@ -150,9 +150,12 @@ if [ "$HAS_JAVA" = 1 ]; then
         cd "$d" || exit 0
         xmls=$(ls -- target/site/jacoco/jacoco.xml */target/site/jacoco/jacoco.xml 2>/dev/null || true)
         [ -n "$xmls" ] || { echo "[cov] 无 jacoco 产物, 跳过轻检 (跑一次 mvn test 生成; 红线在 pre-push full)"; exit 0; }
+        # src-roots: 多模块 jacoco 路径与 git diff 路径不一致时空检放行(gtsp-wop-service mr100 实证), 默认探测全部 src/main/java
+        src_roots=$(find . -type d -path '*/src/main/java' -not -path '*/node_modules/*' -not -path './.wt/*' 2>/dev/null | sort)
+        src_args=''; [ -n "$src_roots" ] && src_args="--src-roots $src_roots"
         echo "[cov] pre-commit $d java staged 变更覆盖检查 (≥${FAIL_UNDER_JAVA}%)"
-        # shellcheck disable=SC2086  # $xmls 是空白分词的多份 jacoco.xml 清单，分词是意图
-        out=$(dc $xmls --compare-branch=HEAD --ignore-unstaged --fail-under="$FAIL_UNDER_JAVA")
+        # shellcheck disable=SC2086  # $xmls/$src_args 均为空白分词清单，分词是意图
+        out=$(dc $xmls $src_args --compare-branch=HEAD --ignore-unstaged --fail-under="$FAIL_UNDER_JAVA")
         rc=$?
         printf '%s\n' "$out"
         if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q 'No lines with coverage information'; then
@@ -199,6 +202,8 @@ if [ "$HAS_JAVA" = 1 ]; then
         [ $rc -ne 0 ] && exit 1
         xmls=$(ls -- target/site/jacoco/jacoco.xml */target/site/jacoco/jacoco.xml 2>/dev/null || true)
         [ -n "$xmls" ] || { echo "[cov] $d 未生成任何 jacoco.xml, 跳过"; exit 0; }
+        src_roots=$(find . -type d -path '*/src/main/java' -not -path '*/node_modules/*' -not -path './.wt/*' 2>/dev/null | sort)
+        src_args=''; [ -n "$src_roots" ] && src_args="--src-roots $src_roots"
         # 全量红线（存量+新增）: 汇总报告级 LINE/BRANCH 计数（生成代码剔除由 JaCoCo ≥0.8.2 注解过滤保证）
         # shellcheck disable=SC2086  # $xmls 同上：多份 jacoco.xml 按空白分词传入
         read -r lm lc bm bc <<<"$(jacoco_totals $xmls)"
@@ -253,8 +258,8 @@ if [ "$HAS_JAVA" = 1 ]; then
           echo "[cov] ✓ $d 全量行覆盖 ${lp}% / 分支 ${bp}% ≥ ${FAIL_UNDER_JAVA}%（原始 missed 行 ${lm}/分支 ${bm}；预算扣除 行-${BUDGET_LINE_MISSED:-0}/分支-${BUDGET_BRANCH_MISSED:-0}，% 为扣除后生效口径，原始数以台账为准）"
         fi
         # 增量补充检查（变更行）: 不替代上面的全量红线
-        # shellcheck disable=SC2086  # $xmls 同上：多份 jacoco.xml 按空白分词传入
-        dc $xmls --compare-branch="$COMPARE" --fail-under="$FAIL_UNDER_JAVA"
+        # shellcheck disable=SC2086  # $xmls/$src_args 同上：按空白分词传入
+        dc $xmls $src_args --compare-branch="$COMPARE" --fail-under="$FAIL_UNDER_JAVA"
       ) || fail=1
     fi
   done
