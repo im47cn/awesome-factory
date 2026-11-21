@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# gates 面确定性测试（周界 PR 验证门, Q10; 仿 awesome-factory tools/test_* 先例）
+# gates 面确定性测试（周界 PR 验证门; 仿 awesome-factory tools/test_* 先例）
 # 用法: bash tools/git/gates/gates-tests/test_mutation-gate.sh
-# 覆盖: 语言分派跳过链(T1-T4/T7/T9) / --ci 契约位 fail-closed(T6) / 接入不完整
+# 覆盖: 语言分派跳过链(T1-T4/T7/T9) / --ci 全量档遍历 pitest 模块(T6) / 本地档收窄
+#       targetClasses 并关 failWhenNoMutations(T6b) / 旧装参数兼容与未知参数
+#       fail-closed(T6c) / 小样本豁免仅本地档、CI 不豁免(T6d/T6f) / 接入不完整
 #       fail-closed(T5) / 外部 143 不放行·真看门狗放行·预算非法·纯删除·空白路径
 #       (T5b-T5f) / PIT 模块循环 stub(T8) / gates-install 落地+对账+缺 lefthook 失败
 #       (T10/T12) / lefthook job 段限幂等注入(T11/T13) / 软链逃逸拒绝(T14) /
@@ -173,7 +175,7 @@ if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '未知参数'; then ok "T6c-
 out=$(cd "$T" && MVN_RC=0 PATH="$STUB:$PATH" bash "$GATES/mutation-gate.sh" 'src/main/java/App.java' 2>&1); rc=$?
 if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '已忽略参数'; then ok "T6c-2 {push_files} 旧装参数 → 忽略并提示"; else bad "T6c-2 (rc=$rc) $out"; fi
 
-# T6d/T6e: 子集小样本豁免只在本地档生效, 且样本够大仍硬拦
+# T6d: 子集小样本豁免只在本地档生效（5 个变异体放过, 40 个仍按阈值硬拦）
 for spec in "5 0 只报告不拦截" "40 1 低于阈值"; do
   set -- $spec; n=$1; want=$2; pat=$3
   mkrepo; stage_java_pit; mkdir -p "$T/src/main/java"; echo "class App {}" > "$T/src/main/java/App.java"; ahead

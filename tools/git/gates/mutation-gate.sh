@@ -17,7 +17,7 @@
 # 红线: java PIT 变异分 ≥ pom <mutationThreshold>; ts 变异分 ≥ stryker.config.json
 #       thresholds.break（模板默认 50，仓可调）
 # 语义: 只约束生产代码变更——纯测试/文档/脚本变更跳过；无 stryker 配置或无
-#       vitest/jest 测试基线的仓提示后跳过（Q6-C 语义，不绑架无基线仓）
+#       vitest/jest 测试基线的仓提示后跳过（不绑架无基线仓）
 # 命名消歧: 本件是 StrykerJS/PIT 源码变异测试门禁; .factory/mutations/ 是工厂验门
 #       灵敏度的缺陷注入体系——同名异物（见 gates.json description）
 set -u
@@ -64,7 +64,7 @@ else
   fi
 fi
 
-# 语言声明: 缺席即跳过（运行时只读声明，判定收口在安装时——Q2 裁定）
+# 语言声明: 缺席即跳过（运行时只读声明，判定收口在安装时）
 PROFILE=""
 [ -f .lefthook-profile ] && PROFILE=$(head -1 .lefthook-profile | tr -d '[:space:]')
 if [ -z "$PROFILE" ]; then
@@ -255,7 +255,7 @@ if [ "$want_ts" = 1 ]; then
         timed=0; [ -n "$flag" ] && [ -f "$flag" ] && timed=1
         [ -n "$flag" ] && rm -f "$flag"
         if [ "$timed" = 1 ] && { [ "$rc" -eq 143 ] || [ "$rc" -eq 137 ]; }; then
-          echo "○ [mutation] ts: 预算 ${budget}s 封顶, 放行 (增量缓存已留存下次续跑; 全量兜底待 CI 档 v2)"
+          echo "○ [mutation] ts: 预算 ${budget}s 封顶, 放行 (增量缓存已留存下次续跑; ts 全量档未接, --ci 目前跳过 ts)"
         elif [ "$rc" -eq 0 ]; then
           echo "✓ [mutation] ts: 变异分达标"
         else
