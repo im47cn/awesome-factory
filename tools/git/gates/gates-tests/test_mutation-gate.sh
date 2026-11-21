@@ -46,6 +46,7 @@ stage_ts() { # 工作树置 ts 三件套: profile 声明 + stryker 配置 + vite
   printf '{\n  "devDependencies": {\n    "vitest": "^1.0.0"\n  }\n}\n' > "$T/package.json"
 }
 
+# shellcheck disable=SC2120  # 档位用例靠显式命令行跑 --ci, 通用路径仍保留可选参数
 run_gate() { out=$(cd "$T" && bash "$GATES/mutation-gate.sh" ${1:+"$1"} 2>&1); rc=$?; }
 
 # ── mutation-gate.sh ────────────────────────────────────────────────────────
@@ -128,9 +129,62 @@ if [ "$rc" -eq 0 ] && grep -Fxq 'src/my dir/a b.ts' "$ARGLOG" && ! grep -Fxq 'sr
   ok "T5f 空白路径 → 单实参完整传递"
 else bad "T5f (rc=$rc) $(cat "$ARGLOG" 2>/dev/null | tr '\n' ' ')"; fi
 
-# T6: --ci 契约位 → fail-closed 拒绝
-mkrepo; run_gate --ci
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '\-\-ci'; then ok "T6 --ci 未交付 → fail-closed"; else bad "T6 (rc=$rc) $out"; fi
+# T6: --ci 全量档 → 遍历 pitest 模块且不传 -DtargetClasses（本地档才收窄）
+STUB=$(mktemp -d "${TMPDIR:-/tmp}/gates-mvnlog.XXXXXX"); DIRS+=("$STUB")
+export MVN_LOG="$STUB/args.log"; : > "$MVN_LOG"
+# 桩: 记录每次调用参数; MVN_XML=N 时伪造 N 个变异体报告（只用于样本豁免分支）
+cat > "$STUB/mvn" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MVN_LOG"
+n=$(printf '%s' "${MVN_XML:-}" | tr -dc '0-9')
+if [ -n "$n" ]; then
+  mkdir -p target/pit-reports; : > target/pit-reports/mutations.xml
+  i=0; while [ "$i" -lt "$n" ]; do echo '<mutation detected="true"/>' >> target/pit-reports/mutations.xml; i=$((i+1)); done
+fi
+exit "${MVN_RC:-0}"
+STUBEOF
+chmod +x "$STUB/mvn"
+
+stage_java_pit() { # 工作树置 java + 根 pom(pitest)
+  printf 'java\n' > "$T/.lefthook-profile"
+  printf '<project>\n  <plugin>org.pitest:pitest-maven</plugin>\n</project>\n' > "$T/pom.xml"
+}
+
+mkrepo; stage_java_pit; : > "$MVN_LOG"
+out=$(cd "$T" && MVN_RC=0 PATH="$STUB:$PATH" bash "$GATES/mutation-gate.sh" --ci 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'CI 全量档' \
+   && ! grep -q 'targetClasses' "$MVN_LOG"; then
+  ok "T6 --ci 全量档: 无变更集也跑且不加 -DtargetClasses"
+else bad "T6 (rc=$rc) $out | mvn: $(tr '\n' ' ' <"$MVN_LOG")"; fi
+
+# T6b: 本地档 → -DtargetClasses 只含变更类（含嵌套类模式），并关 failWhenNoMutations
+: > "$MVN_LOG"
+mkdir -p "$T/src/main/java/com/example"; echo "class Foo {}" > "$T/src/main/java/com/example/Foo.java"; ahead
+out=$(cd "$T" && MVN_RC=0 PATH="$STUB:$PATH" bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && grep -q '\-DtargetClasses=com\.example\.Foo,com\.example\.Foo\$' "$MVN_LOG" \
+   && grep -q '\-DfailWhenNoMutations=false' "$MVN_LOG"; then
+  ok "T6b 本地档按变更类收窄 targetClasses"
+else bad "T6b (rc=$rc) $out | mvn: $(tr '\n' ' ' <"$MVN_LOG")"; fi
+
+# T6c: 未知 -- 参数 fail-closed; 旧装 {push_files} 文件清单参数兼容忽略
+mkrepo; stage_java_pit; mkdir -p "$T/src/main/java"; echo "class App {}" > "$T/src/main/java/App.java"; ahead
+out=$(cd "$T" && PATH="$STUB:$PATH" bash "$GATES/mutation-gate.sh" --c1 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '未知参数'; then ok "T6c-1 未知 -- 参数 → fail-closed"; else bad "T6c-1 (rc=$rc) $out"; fi
+out=$(cd "$T" && MVN_RC=0 PATH="$STUB:$PATH" bash "$GATES/mutation-gate.sh" 'src/main/java/App.java' 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '已忽略参数'; then ok "T6c-2 {push_files} 旧装参数 → 忽略并提示"; else bad "T6c-2 (rc=$rc) $out"; fi
+
+# T6d/T6e: 子集小样本豁免只在本地档生效, 且样本够大仍硬拦
+for spec in "5 0 只报告不拦截" "40 1 低于阈值"; do
+  set -- $spec; n=$1; want=$2; pat=$3
+  mkrepo; stage_java_pit; mkdir -p "$T/src/main/java"; echo "class App {}" > "$T/src/main/java/App.java"; ahead
+  out=$(cd "$T" && MVN_RC=1 MVN_XML="$n" PATH="$STUB:$PATH" bash "$GATES/mutation-gate.sh" 2>&1); rc=$?
+  if [ "$rc" -eq "$want" ] && printf '%s' "$out" | grep -q "$pat"; then ok "T6d 本地档样本 $n → $pat"; else bad "T6d($n) (rc=$rc want=$want) $out"; fi
+done
+
+# T6f: CI 档不做小样本豁免（全量样本不足=执行异常, 不得放行）
+mkrepo; stage_java_pit; : > "$MVN_LOG"
+out=$(cd "$T" && MVN_RC=1 MVN_XML=5 PATH="$STUB:$PATH" bash "$GATES/mutation-gate.sh" --ci 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '✗'; then ok "T6f CI 档小样本不豁免 → fail"; else bad "T6f (rc=$rc) $out"; fi
 
 # T7: java + 无 src/main/java 变更 → 跳过
 mkrepo; printf 'java\n' > "$T/.lefthook-profile"; echo tweak >> "$T/README.md"; ahead; run_gate
