@@ -216,44 +216,44 @@ JOB_BLOCK='    mutation-gate:
       # guard 1=正常推送/读取异常(fail-open)→|| 落本门禁, 退出码即 job 退出码
       run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/mutation-gate.sh'
 
-# python3 行级手术(不引入 yaml 依赖): 只认 pre-push.jobs|commands 段内同名 job——挂在
+# python3 行级手术(不引入 yaml 依赖): 只认 <hook>.jobs|commands 段内同名 job——挂在
 # 其他 hook 下的同名 job 不算在位; 注入插到子段末尾并回读校验, 失败不报成功
 # exit 0=已在位或注入成功 / 1=check 发现缺席 / 3=注入失败
-lw_job() { # $1=lefthook.yml $2=check|inject $3=job_block
-  python3 - "$1" "$2" "$3" <<'PY'
+lw_job() { # $1=lefthook.yml $2=check|inject $3=job_block $4=hook $5=jobname
+  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
 import os, re, sys, tempfile
-path, mode, block = sys.argv[1], sys.argv[2], sys.argv[3]
+path, mode, block, hook, job = sys.argv[1:6]
 TOP = re.compile(r"^[^\s#]")
 with open(path) as f:
     lines = f.read().splitlines()
 
 def find_job(lines):
-    """pre-push 的 jobs|commands 子段内 '    mutation-gate:' 行号(0 基), 无则 -1"""
-    s = next((i for i, l in enumerate(lines) if l.rstrip() == "pre-push:"), None)
+    """<hook> 的 jobs|commands 子段内 '    <job>:' 行号(0 基), 无则 -1"""
+    s = next((i for i, l in enumerate(lines) if l.rstrip() == hook + ":"), None)
     if s is None:
         return -1
     e = next((i for i in range(s + 1, len(lines)) if TOP.match(lines[i])), len(lines))
     j = next((i for i in range(s + 1, e) if lines[i].rstrip() in ("  jobs:", "  commands:")), -1)
     if j < 0:
         return -1
-    return next((i for i in range(j + 1, e) if lines[i].startswith("    mutation-gate:")), -1)
+    return next((i for i in range(j + 1, e) if lines[i].startswith("    " + job + ":")), -1)
 
 if find_job(lines) >= 0:
-    print("✔ [gates] lefthook.yml pre-push mutation-gate job 已在位（幂等跳过）")
+    print(f"✔ [gates] lefthook.yml {hook} {job} job 已在位（幂等跳过）")
     sys.exit(0)
 if mode == "check":
     sys.exit(1)
 
-s = next((i for i, l in enumerate(lines) if l.rstrip() == "pre-push:"), None)
+s = next((i for i, l in enumerate(lines) if l.rstrip() == hook + ":"), None)
 if s is None:
     if lines and lines[-1].strip():
         lines.append("")
-    lines += ["pre-push:", "  jobs:"] + block.splitlines()
+    lines += [hook + ":", "  jobs:"] + block.splitlines()
 else:
     e = next((i for i in range(s + 1, len(lines)) if TOP.match(lines[i])), len(lines))
     j = next((i for i in range(s + 1, e) if lines[i].rstrip() in ("  jobs:", "  commands:")), -1)
     if j < 0:
-        # pre-push 无 jobs/commands 子段: 紧随其后插入 jobs: 头(其余 2 空格属性行后移仍合法)
+        # <hook> 无 jobs/commands 子段: 紧随其后插入 jobs: 头(其余 2 空格属性行后移仍合法)
         lines[s + 1:s + 1] = ["  jobs:"] + block.splitlines()
     else:
         # 插到子段末尾: 最后一条缩进≥4 的非空行之后, 不扰其后的 2 空格属性/顶层键
@@ -278,7 +278,7 @@ except BaseException:
     except OSError:
         pass
     raise
-print("✔ [gates] lefthook.yml pre-push mutation-gate job 已注入")
+print(f"✔ [gates] lefthook.yml {hook} {job} job 已注入")
 PY
 }
 
@@ -288,16 +288,42 @@ if [ "$MODE" = install ]; then
     echo "⚠ [gates] 无 lefthook.yml（先经 awesome-factory install.sh 初始化）; 请手动挂 pre-push mutation-gate job"
   else
     guard_dest "$LW"
-    lw_job "$LW" inject "$JOB_BLOCK" || { echo "✗ [gates] lefthook.yml job 注入失败"; fail=1; }
+    lw_job "$LW" inject "$JOB_BLOCK" pre-push mutation-gate || { echo "✗ [gates] lefthook.yml job 注入失败"; fail=1; }
   fi
 else
   if [ ! -f "$LW" ]; then
     echo "✗ [gates] lefthook.yml 缺席: pre-push mutation-gate job 无处挂载（--check 失败; 先经 awesome-factory install.sh 初始化）"
     fail=1
-  elif lw_job "$LW" check "$JOB_BLOCK" >/dev/null 2>&1; then
+  elif lw_job "$LW" check "$JOB_BLOCK" pre-push mutation-gate >/dev/null 2>&1; then
     echo "✔ [gates] lefthook.yml pre-push mutation-gate job 在位"
   else
     echo "✗ [gates] lefthook.yml pre-push jobs 缺 mutation-gate job（--check 失败; 重跑 install 幂等注入）"
+    fail=1
+  fi
+fi
+
+# ── ④b lefthook.yml pre-commit comment-gate job 注入（幂等; Java 注释棘轮） ──
+# 棘轮语义: .lefthook/comment-baseline.json 缺席 = 未武装, gate 放行（防 17 仓装门即拦）;
+# 基线生成/收缩见 awesome-rules skills/delete-comment。基线是仓侧数据, 不进本分发面。
+# {staged_files}: 非本仓改动恒 skip; 本仓未 piped、不收 stdin, 不涉链首 stdin 限制。
+JOB_BLOCK_C='    comment-gate:
+      run: python3 .lefthook/comment-gate.py check --repo . --baseline .lefthook/comment-baseline.json {staged_files}'
+
+if [ "$MODE" = install ]; then
+  if [ ! -f "$LW" ]; then
+    echo "⚠ [gates] 无 lefthook.yml; 请手动挂 pre-commit comment-gate job"
+  else
+    guard_dest "$LW"
+    lw_job "$LW" inject "$JOB_BLOCK_C" pre-commit comment-gate || { echo "✗ [gates] lefthook.yml comment-gate job 注入失败"; fail=1; }
+  fi
+else
+  if [ ! -f "$LW" ]; then
+    echo "✗ [gates] lefthook.yml 缺席: pre-commit comment-gate job 无处挂载（--check 失败）"
+    fail=1
+  elif lw_job "$LW" check "$JOB_BLOCK_C" pre-commit comment-gate >/dev/null 2>&1; then
+    echo "✔ [gates] lefthook.yml pre-commit comment-gate job 在位"
+  else
+    echo "✗ [gates] lefthook.yml pre-commit jobs 缺 comment-gate job（--check 失败; 重跑 install 幂等注入）"
     fail=1
   fi
 fi
