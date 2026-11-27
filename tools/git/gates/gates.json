@@ -8,6 +8,10 @@
     {
       "src": "tools/git/gates/comment-gate.py",
       "dst": ".lefthook/comment-gate.py"
+    },
+    {
+      "src": "tools/git/gates/workspaces-guard.sh",
+      "dst": ".lefthook/workspaces-guard.sh"
     }
   ],
   "local": [

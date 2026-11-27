@@ -21,7 +21,7 @@ fail() { echo "VIOLATION: $*"; violations=$((violations+1)); }
 
 for d in "$ROOT"/*/; do
   slug=$(basename "$d")
-  [ -f "$d" ] && continue
+  [ -d "$d" ] || continue
   echo "$slug" | grep -Eq "$SLUG_RE" || fail "slug 命名违规: $slug（须 KFPT-xxx 或 YYYYMMDD 开头）"
 
   if ! find "$d" -maxdepth 3 -name .git \( -type f -o -type d \) | grep -q .; then
@@ -38,11 +38,12 @@ done
 # （worktree prune 已在常规巡检做，这里只报"注册了但目录已消失"）
 SOURCES_BASE="${SOURCES_BASE:-$HOME/sources/open-platform}"
 for repo in "$SOURCES_BASE"/*/; do
-  [ -d "$repo/.git" ] || continue
-  git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}' | while read -r wt; do
-    case "$wt" in "$ROOT"/*) [ -e "$wt" ] || echo "VIOLATION: prunable 残链 $wt（git worktree prune 可清）";; esac
-  done
-done | grep VIOLATION | while read -r v; do echo "$v"; done
+  [ -e "$repo/.git" ] || continue
+  # porcelain 对含空格路径输出带引号: substr 取全段再剥引号, 避免 awk $2 截断
+  while read -r wt; do
+    case "$wt" in "$ROOT"/*) [ -e "$wt" ] || fail "prunable 残链 $wt（git worktree prune 可清）";; esac
+  done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree /{wt=substr($0,10); gsub(/^"|"$/,"",wt); print wt}')
+done
 
 if [ "$violations" -gt 0 ]; then
   echo "workspaces-guard: FAIL（$violations 条违规）"; exit 1

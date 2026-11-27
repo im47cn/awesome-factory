@@ -87,6 +87,14 @@ command -v node >/dev/null 2>&1 || { echo "✘ 未检测到 node，请先安装 
 command -v npm  >/dev/null 2>&1 || { echo "✘ 未检测到 npm"; exit 1; }
 echo "✔ node $(node -v)"
 
+# update 会用上游模板覆盖 lefthook.yml（copy_one 无条件 cp），抹掉 gates-install 注入的
+# mutation-gate/comment-gate/comment-sync jobs；先记曾装状态，§4 后重跑 gates-install 恢复
+GATES_WAS_INSTALLED=0
+if [ "$MODE" = "update" ] && [ -f "$TARGET/lefthook.yml" ] \
+   && grep -Eq '^[[:space:]]+(mutation-gate|comment-gate|comment-sync):' "$TARGET/lefthook.yml"; then
+  GATES_WAS_INSTALLED=1
+fi
+
 # ── 2. 拷贝配置（install：已存在则确认；update：直接覆盖）─────────
 # lefthook.yml/.lefthook/coverage.sh 是 hook 配置，入库后随 clone 共享给全团队
 copy_one() { # $1=源文件名(相对 SCRIPT_DIR) $2=目标路径
@@ -185,6 +193,17 @@ if [ -n "$GIT_DIR" ]; then
   fi
 else
   echo "⚠ 非 git 仓库，跳过 lefthook hook 安装"
+fi
+
+# ── 4b. gates 注入恢复（仅 update 曾装时）: §2 覆盖 lefthook.yml 抹掉 gates jobs，
+# 重跑 gates-install 幂等注入恢复（其内含 lefthook install 联动重建 shim）
+if [ "$GATES_WAS_INSTALLED" = "1" ]; then
+  if [ -f "$SCRIPT_DIR/gates/gates-install.sh" ]; then
+    bash "$SCRIPT_DIR/gates/gates-install.sh" --repo "$TARGET" \
+      || echo "⚠ gates 注入恢复失败（手动: bash $SCRIPT_DIR/gates/gates-install.sh --repo $TARGET）"
+  else
+    echo "⚠ 检测到 gates 注入 jobs 但 gates-install.sh 缺席, 跳过恢复（请手动跑 gates-install）"
+  fi
 fi
 
 # ── 5. 注入 package.json scripts ────────────────────────────────

@@ -16,8 +16,10 @@ import bisect
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
+import tempfile
 
 
 def tracked_java(repo):
@@ -36,7 +38,21 @@ def line_starts(src):
     return starts
 
 
+class SrcRefused(Exception):
+    """Refused to read a source file: symlink, not a regular file, or >10 MiB."""
+
+
+MAX_SRC_BYTES = 10 * 1024 * 1024
+
+
 def read_src(path):
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        raise SrcRefused(f"{path}: symlinked source")
+    if not stat.S_ISREG(st.st_mode):
+        raise SrcRefused(f"{path}: not a regular file")
+    if st.st_size > MAX_SRC_BYTES:
+        raise SrcRefused(f"{path}: larger than 10 MiB")
     with open(path, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
         return f.read()
 
@@ -118,8 +134,19 @@ def pos(starts, idx):
     return li + 1, idx - starts[li]
 
 
-def block_id(rel, kind, text):
-    return hashlib.sha1(f"{rel}\0{kind}\0{text}".encode("utf-8", "surrogateescape")).hexdigest()[:12]
+def block_id(rel, kind, text, occ):
+    """sha1 over rel, kind, text and occurrence index; occ tells identical blocks apart."""
+    return hashlib.sha1(f"{rel}\0{kind}\0{text}\0{occ}".encode("utf-8", "surrogateescape")).hexdigest()[:12]
+
+
+def occ_iter(src):
+    """[(kind, start, end, occ)] in lex order; occ is the 0-based repeat count of (kind, text)."""
+    seen = {}
+    for kind, s, e in lex(src):
+        key = (kind, src[s:e])
+        occ = seen.get(key, 0)
+        seen[key] = occ + 1
+        yield kind, s, e, occ
 
 
 def next_code_line(lines, end_line):
@@ -144,12 +171,12 @@ def scan_file(repo, rel):
     starts = line_starts(src)
     lines = src.split("\n")
     recs = []
-    for kind, s, e in lex(src):
+    for kind, s, e, occ in occ_iter(src):
         sl, sc = pos(starts, s)
         el, ec = pos(starts, max(e - 1, s))
         text = src[s:e]
         recs.append({
-            "id": block_id(rel, kind, text),
+            "id": block_id(rel, kind, text, occ),
             "file": rel,
             "kind": kind,
             "start": sl,
@@ -159,8 +186,8 @@ def scan_file(repo, rel):
             "lines": el - sl + 1,
             "text": text,
             "prev": prev_code_line(lines, sl),
-            "next": next_code_line(lines, el + 1),
-            "test": "/src/test/" in rel,
+            "next": next_code_line(lines, el),
+            "test": rel.startswith("src/test/") or "/src/test/" in rel,
         })
     return recs
 
@@ -168,7 +195,10 @@ def scan_file(repo, rel):
 def cmd_scan(args):
     recs = []
     for rel in tracked_java(args.repo):
-        recs.extend(scan_file(args.repo, rel))
+        try:
+            recs.extend(scan_file(args.repo, rel))
+        except SrcRefused as e:
+            print(f"scan: skipped {e}", file=sys.stderr)
     recs.sort(key=lambda r: (r["file"], r["start"]))
     out = open(args.out, "w", encoding="utf-8") if args.out else sys.stdout
     for r in recs:
@@ -196,9 +226,9 @@ def plan_edits(src, delete_ids, rel):
     lines = src.split("\n")
     del_lines, char_dels = set(), {}
     matched = 0
-    for kind, s, e in lex(src):
+    for kind, s, e, occ in occ_iter(src):
         text = src[s:e]
-        if block_id(rel, kind, text) not in delete_ids:
+        if block_id(rel, kind, text, occ) not in delete_ids:
             continue
         matched += 1
         # A comment acts as whitespace: deleting one that sits between two
@@ -294,6 +324,47 @@ def indent_drift(src, new):
     return 0
 
 
+_OP4 = frozenset({">>>="})
+_OP3 = frozenset({"<<=", ">>=", ">>>"})
+_OP2 = frozenset({"==", "!=", "<=", ">=", "&&", "||", "++", "--", "+=", "-=",
+                  "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>", "->", "::"})
+
+
+def code_tokens(src):
+    """Code token stream with comments blanked and maximal-munch operator lexing.
+
+    code_only() strips whitespace, so it cannot see `1 +/*c*/+ 2` collapse into
+    `1 ++ 2`; comparing token streams catches any such fusion.
+    """
+    chars = list(src)
+    for _, s, e in lex(src):
+        for i in range(s, e):
+            if chars[i] != "\n":
+                chars[i] = " "
+    text = "".join(chars)
+    i, n, out = 0, len(text), []
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif c.isalnum() or c in "_$":
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] in "_$"):
+                j += 1
+            out.append(text[i:j])
+            i = j
+        else:
+            for ln, ops in ((4, _OP4), (3, _OP3), (2, _OP2)):
+                if text[i:i + ln] in ops:
+                    out.append(text[i:i + ln])
+                    i += ln
+                    break
+            else:
+                out.append(c)
+                i += 1
+    return out
+
+
 def cmd_apply(args):
     ids = load_delete_ids(args.decisions)
     if not ids:
@@ -302,13 +373,21 @@ def cmd_apply(args):
     changed = 0
     for rel in tracked_java(args.repo):
         path = os.path.join(args.repo, rel)
-        src = read_src(path)
+        try:
+            src = read_src(path)
+        except SrcRefused as e:
+            print(f"ABORT {e}", file=sys.stderr)
+            sys.exit(2)
         plan = plan_edits(src, ids, rel)
         if not plan:
             continue
         new, matched = plan
         if code_only(src) != code_only(new):
             print(f"ABORT {rel}: code changed, fix the tool before retrying", file=sys.stderr)
+            sys.exit(2)
+        if code_tokens(src) != code_tokens(new):
+            print(f"ABORT {rel}: deleting the comment fuses adjacent tokens "
+                  "(e.g. `1 +/*c*/+ 2` becomes `1 ++ 2`); delete it by hand", file=sys.stderr)
             sys.exit(2)
         drift = indent_drift(src, new)
         if drift:
@@ -322,27 +401,82 @@ def cmd_apply(args):
     print(f"apply: {changed} file(s) changed")
 
 
+def count_lines(src):
+    starts = line_starts(src)
+    hit = set()
+    for _, s, e in lex(src):
+        a = pos(starts, s)[0]
+        b = pos(starts, max(e - 1, s))[0]
+        hit.update(range(a, b + 1))
+    return len(hit)
+
+
 def comment_lines(repo):
     counts = {}
     for rel in tracked_java(repo):
-        src = read_src(os.path.join(repo, rel))
-        starts = line_starts(src)
-        hit = set()
-        for _, s, e in lex(src):
-            a = pos(starts, s)[0]
-            b = pos(starts, max(e - 1, s))[0]
-            hit.update(range(a, b + 1))
-        counts[rel] = len(hit)
+        try:
+            src = read_src(os.path.join(repo, rel))
+        except SrcRefused as e:
+            print(f"comment-gate: skipped {e}", file=sys.stderr)
+            continue
+        counts[rel] = count_lines(src)
     return counts
+
+
+def head_comment_lines(repo):
+    """Per-file comment counts from the HEAD tree — sync must never see a dirty worktree."""
+    out = subprocess.run(
+        ["git", "-C", repo, "ls-tree", "-r", "-z", "HEAD"],
+        capture_output=True, check=True,
+    ).stdout
+    counts = {}
+    for ent in out.decode("utf-8", "surrogateescape").split("\0"):
+        if not ent:
+            continue
+        meta, rel = ent.split("\t", 1)
+        mode, kind = meta.split()[:2]
+        if kind != "blob" or not rel.endswith(".java"):
+            continue
+        data = subprocess.run(
+            ["git", "-C", repo, "show", f"HEAD:{rel}"],
+            capture_output=True, check=True,
+        ).stdout
+        if len(data) > MAX_SRC_BYTES:
+            print(f"comment-gate: skipped {rel}: larger than 10 MiB (in HEAD)", file=sys.stderr)
+            continue
+        counts[rel] = count_lines(data.decode("utf-8", "surrogateescape"))
+    return counts
+
+
+def baseline_json(files):
+    data = {"version": 1, "total": sum(files.values()), "files": files}
+    return (json.dumps(data, ensure_ascii=False, indent=0, sort_keys=True) + "\n").encode("utf-8")
+
+
+def write_baseline_atomic(path, payload):
+    """Atomic write refusing symlinks: the baseline is hook-rewritten, so a symlink
+    here would let a merge write through into e.g. .git/hooks."""
+    if os.path.islink(path):
+        print(f"comment-gate: ABORT {path} is a symlink; refusing to write through it", file=sys.stderr)
+        sys.exit(2)
+    d = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".comment-baseline.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def cmd_baseline(args):
     counts = comment_lines(args.repo)
-    data = {"version": 1, "total": sum(counts.values()), "files": counts}
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=0, sort_keys=True)
-        f.write("\n")
-    print(f"baseline: {len(counts)} files, {data['total']} comment lines -> {args.out}")
+    write_baseline_atomic(args.out, baseline_json(counts))
+    print(f"baseline: {len(counts)} files, {sum(counts.values())} comment lines -> {args.out}")
 
 
 def cmd_check(args):
@@ -356,7 +490,11 @@ def cmd_check(args):
     for rel in files:
         if not rel.endswith(".java") or not os.path.exists(os.path.join(args.repo, rel)):
             continue
-        src = read_src(os.path.join(args.repo, rel))
+        try:
+            src = read_src(os.path.join(args.repo, rel))
+        except SrcRefused as e:
+            bad.append(str(e))
+            continue
         starts = line_starts(src)
         hit = set()
         for _, s, e in lex(src):
@@ -378,15 +516,35 @@ def cmd_sync(args):
     if not os.path.exists(args.baseline):
         print("comment-gate: no baseline -> not armed, pass (generate one with the baseline subcommand)")
         return
-    counts = comment_lines(args.repo)
-    data = {"version": 1, "total": sum(counts.values()), "files": counts}
-    new = json.dumps(data, ensure_ascii=False, indent=0, sort_keys=True) + "\n"
+    if subprocess.run(["git", "-C", args.repo, "rev-parse", "--verify", "HEAD"],
+                      capture_output=True).returncode != 0:
+        print("comment-gate: no HEAD commit; sync reconciles a merge and needs one", file=sys.stderr)
+        sys.exit(1)
     with open(args.baseline, "rb") as f:
         old = f.read()
-    if new.encode("utf-8") == old:
+    try:
+        old_files = json.loads(old.decode("utf-8"))["files"]
+        if not isinstance(old_files, dict):
+            raise ValueError('"files" is not an object')
+        for rel, v in old_files.items():
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise ValueError(f"bad count for {rel}: {v!r}")
+    except (ValueError, KeyError, UnicodeDecodeError) as e:
+        print(f"comment-gate: ABORT malformed baseline {args.baseline}: {e}", file=sys.stderr)
+        sys.exit(2)
+    counts = head_comment_lines(args.repo)
+    grew = sorted((rel, old_files[rel], c) for rel, c in counts.items()
+                  if rel in old_files and c > old_files[rel])
+    if grew:
+        print("comment-gate: comments grew vs baseline; sync keeps the old counts (ratchet) — "
+              "run the baseline subcommand to bless growth deliberately:", file=sys.stderr)
+        for rel, b, c in grew:
+            print(f"  {rel}: {b} -> {c}", file=sys.stderr)
+    merged = {rel: min(old_files[rel], c) for rel, c in counts.items() if rel in old_files}
+    new = baseline_json(merged)
+    if new == old:
         return
-    with open(args.baseline, "w", encoding="utf-8") as f:
-        f.write(new)
+    write_baseline_atomic(args.baseline, new)
     print("comment-gate: baseline drift after merge — rewritten, stage and amend or commit it")
 
 
