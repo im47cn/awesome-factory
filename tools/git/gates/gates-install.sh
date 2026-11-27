@@ -8,8 +8,12 @@
 #   ① .lefthook-profile 语言声明——缺席时探测生成（pom.xml→java,
 #      pyproject.toml→python, tsconfig.json→ts；多语言逗号分隔），
 #      已存在不覆盖（人工覆写优先）
-#   ② lefthook.yml pre-push mutation-gate job 幂等注入（检测/注入均限定 pre-push
-#      jobs/commands 段内; python3 行级手术 + 回读校验, 失败不报成功）
+#   ② lefthook.yml job 幂等注入（检测/注入均限定对应 hook 的 jobs/commands 段内;
+#      python3 行级手术 + 回读校验, 失败不报成功）:
+#      - pre-push mutation-gate job
+#      - post-merge comment-sync job——comment-baseline.json 是全树重算单 blob,
+#        git 无法内容合并, merge 后必漂移; 本 job 用 comment-gate.py sync 检漂即
+#        重算落盘（仓未武装 baseline 时 sync 自身 not-armed exit 0, 无害）
 #   ③ .lefthook/gates-lock.json 锚点（上游 HEAD-9 + 落地文件 sha256）
 # 用法: bash gates-install.sh [--repo <path>] [--check]
 #   --repo  目标仓（默认当前目录所属仓）
@@ -198,7 +202,7 @@ while read -r src dst; do
   fi
 done < <(list_face local)
 
-# ── ④ lefthook.yml pre-push mutation-gate job 注入（幂等; 检测/注入均限定 pre-push 段） ──
+# ── ④ lefthook.yml job 幂等注入（pre-push mutation-gate + post-merge comment-sync; 检测/注入均限定对应 hook 段） ──
 # run 链语义: awesome-factory 删除防护契约——纯删除推送 exit 0 短路跳过门禁(sourcery/
 # coderabbit job 同款既定语义), 正常推送/读取异常 exit 1 门禁照跑, 故 || 链在正常推送
 # 必然落 mutation-gate; 不用 {push_files}: 新分支首推无 @{push} 引用时 lefthook 展开
@@ -216,45 +220,48 @@ JOB_BLOCK='    mutation-gate:
       # guard 1=正常推送/读取异常(fail-open)→|| 落本门禁, 退出码即 job 退出码
       run: bash .lefthook/pre-push-delete-guard.sh || bash .lefthook/mutation-gate.sh'
 
+PM_BLOCK='    comment-sync:
+      run: python3 .lefthook/comment-gate.py sync --repo . --baseline .lefthook/comment-baseline.json'
+
 # python3 行级手术(不引入 yaml 依赖): 只认 pre-push.jobs|commands 段内同名 job——挂在
 # 其他 hook 下的同名 job 不算在位; 注入插到子段末尾并回读校验, 失败不报成功
 # exit 0=已在位或注入成功 / 1=check 发现缺席 / 3=注入失败
-lw_job() { # $1=lefthook.yml $2=check|inject $3=job_block
-  python3 - "$1" "$2" "$3" <<'PY'
+lw_job() { # $1=lefthook.yml $2=check|inject $3=hook名 $4=job名 $5=hook缺席时插入的子段头 $6=job_block
+  python3 - "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
 import os, re, sys, tempfile
-path, mode, block = sys.argv[1], sys.argv[2], sys.argv[3]
+path, mode, hook, job, subhead, block = sys.argv[1:7]
 TOP = re.compile(r"^[^\s#]")
 with open(path) as f:
     lines = f.read().splitlines()
 
 def find_job(lines):
-    """pre-push 的 jobs|commands 子段内 '    mutation-gate:' 行号(0 基), 无则 -1"""
-    s = next((i for i, l in enumerate(lines) if l.rstrip() == "pre-push:"), None)
+    """hook 的 jobs|commands 子段内 '    <job>:' 行号(0 基), 无则 -1"""
+    s = next((i for i, l in enumerate(lines) if l.rstrip() == hook + ":"), None)
     if s is None:
         return -1
     e = next((i for i in range(s + 1, len(lines)) if TOP.match(lines[i])), len(lines))
     j = next((i for i in range(s + 1, e) if lines[i].rstrip() in ("  jobs:", "  commands:")), -1)
     if j < 0:
         return -1
-    return next((i for i in range(j + 1, e) if lines[i].startswith("    mutation-gate:")), -1)
+    return next((i for i in range(j + 1, e) if lines[i].startswith("    " + job + ":")), -1)
 
 if find_job(lines) >= 0:
-    print("✔ [gates] lefthook.yml pre-push mutation-gate job 已在位（幂等跳过）")
+    print(f"✔ [gates] lefthook.yml {hook} {job} job 已在位（幂等跳过）")
     sys.exit(0)
 if mode == "check":
     sys.exit(1)
 
-s = next((i for i, l in enumerate(lines) if l.rstrip() == "pre-push:"), None)
+s = next((i for i, l in enumerate(lines) if l.rstrip() == hook + ":"), None)
 if s is None:
     if lines and lines[-1].strip():
         lines.append("")
-    lines += ["pre-push:", "  jobs:"] + block.splitlines()
+    lines += [hook + ":", subhead] + block.splitlines()
 else:
     e = next((i for i in range(s + 1, len(lines)) if TOP.match(lines[i])), len(lines))
     j = next((i for i in range(s + 1, e) if lines[i].rstrip() in ("  jobs:", "  commands:")), -1)
     if j < 0:
-        # pre-push 无 jobs/commands 子段: 紧随其后插入 jobs: 头(其余 2 空格属性行后移仍合法)
-        lines[s + 1:s + 1] = ["  jobs:"] + block.splitlines()
+        # hook 无 jobs/commands 子段: 紧随其后插入子段头(其余 2 空格属性行后移仍合法)
+        lines[s + 1:s + 1] = [subhead] + block.splitlines()
     else:
         # 插到子段末尾: 最后一条缩进≥4 的非空行之后, 不扰其后的 2 空格属性/顶层键
         last = j
@@ -269,7 +276,7 @@ try:
         tmp.write("\n".join(lines) + "\n")
     with open(tmp.name) as f:
         if find_job(f.read().splitlines()) < 0:
-            print("✗ [gates] lefthook.yml job 注入后回读校验未通过")
+            print(f"✗ [gates] lefthook.yml {hook} {job} job 注入后回读校验未通过")
             sys.exit(3)
     os.replace(tmp.name, path)
 except BaseException:
@@ -278,27 +285,36 @@ except BaseException:
     except OSError:
         pass
     raise
-print("✔ [gates] lefthook.yml pre-push mutation-gate job 已注入")
+print(f"✔ [gates] lefthook.yml {hook} {job} job 已注入")
 PY
 }
 
 LW="$REPO/lefthook.yml"
 if [ "$MODE" = install ]; then
   if [ ! -f "$LW" ]; then
-    echo "⚠ [gates] 无 lefthook.yml（先经 awesome-factory install.sh 初始化）; 请手动挂 pre-push mutation-gate job"
+    echo "⚠ [gates] 无 lefthook.yml（先经 awesome-factory install.sh 初始化）; 请手动挂 pre-push mutation-gate 与 post-merge comment-sync job"
   else
     guard_dest "$LW"
-    lw_job "$LW" inject "$JOB_BLOCK" || { echo "✗ [gates] lefthook.yml job 注入失败"; fail=1; }
+    lw_job "$LW" inject pre-push mutation-gate "  jobs:" "$JOB_BLOCK" || { echo "✗ [gates] lefthook.yml pre-push job 注入失败"; fail=1; }
+    lw_job "$LW" inject post-merge comment-sync "  commands:" "$PM_BLOCK" || { echo "✗ [gates] lefthook.yml post-merge job 注入失败"; fail=1; }
   fi
 else
   if [ ! -f "$LW" ]; then
-    echo "✗ [gates] lefthook.yml 缺席: pre-push mutation-gate job 无处挂载（--check 失败; 先经 awesome-factory install.sh 初始化）"
+    echo "✗ [gates] lefthook.yml 缺席: pre-push mutation-gate / post-merge comment-sync job 无处挂载（--check 失败; 先经 awesome-factory install.sh 初始化）"
     fail=1
-  elif lw_job "$LW" check "$JOB_BLOCK" >/dev/null 2>&1; then
-    echo "✔ [gates] lefthook.yml pre-push mutation-gate job 在位"
   else
-    echo "✗ [gates] lefthook.yml pre-push jobs 缺 mutation-gate job（--check 失败; 重跑 install 幂等注入）"
-    fail=1
+    if lw_job "$LW" check pre-push mutation-gate "  jobs:" "$JOB_BLOCK" >/dev/null 2>&1; then
+      echo "✔ [gates] lefthook.yml pre-push mutation-gate job 在位"
+    else
+      echo "✗ [gates] lefthook.yml pre-push jobs 缺 mutation-gate job（--check 失败; 重跑 install 幂等注入）"
+      fail=1
+    fi
+    if lw_job "$LW" check post-merge comment-sync "  commands:" "$PM_BLOCK" >/dev/null 2>&1; then
+      echo "✔ [gates] lefthook.yml post-merge comment-sync job 在位"
+    else
+      echo "✗ [gates] lefthook.yml post-merge commands 缺 comment-sync job（--check 失败; 重跑 install 幂等注入）"
+      fail=1
+    fi
   fi
 fi
 

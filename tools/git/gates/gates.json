@@ -4,6 +4,10 @@
     {
       "src": "tools/git/gates/mutation-gate.sh",
       "dst": ".lefthook/mutation-gate.sh"
+    },
+    {
+      "src": "tools/git/gates/comment-gate.py",
+      "dst": ".lefthook/comment-gate.py"
     }
   ],
   "local": [
