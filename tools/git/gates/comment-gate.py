@@ -217,29 +217,81 @@ def plan_edits(src, delete_ids, rel):
             if first[:sc].strip() == "" and first[end_col_excl:].strip() == "":
                 del_lines.add(sl)
             elif first[:sc].strip() == "":
-                char_dels.setdefault(sl, []).append((sc, end_col_excl))
+                # Comment starts the line but code follows it: delete from column 0 so the
+                # code keeps the indent that preceded the comment. Deleting only the
+                # comment chars leaves indent + the comment's own trailing spaces, which
+                # shifts the code right — code_only() ignores whitespace and cannot catch it.
+                char_dels.setdefault(sl, []).append((0, end_col_excl, ""))
             else:
-                char_dels.setdefault(sl, []).append((sc, end_col_excl))
+                # Inline comment flanked by spaces on both sides (`a /*x*/ b`): take one
+                # adjacent space too, otherwise `a  b` leaves double spacing. Cosmetic,
+                # but keeping original column count makes the diff whitespace-neutral.
+                a0 = end_col_excl
+                if a0 < len(first) and first[sc - 1] == " " and first[a0] == " ":
+                    a0 += 1
+                char_dels.setdefault(sl, []).append((sc, a0, ""))
         else:
             if first[:sc].strip() == "":
                 del_lines.add(sl)
             else:
-                char_dels.setdefault(sl, []).append((sc, len(first)))
+                char_dels.setdefault(sl, []).append((sc, len(first), ""))
             del_lines.update(range(sl + 1, el))
             if lastline[end_col_excl:].strip() == "":
                 del_lines.add(el)
             else:
-                char_dels.setdefault(el, []).append((0, end_col_excl))
+                # Code follows the closing `*/` on the same line: deleting from column 0
+                # would eat that line's leading indent (multi-line analog of the
+                # same-line drift bug), so restore the indent as replacement text.
+                li = len(lastline) - len(lastline.lstrip(" \t"))
+                char_dels.setdefault(el, []).append((0, end_col_excl, " " * li))
     if not matched:
         return None
     new_lines = []
     for idx, line in enumerate(lines, 1):
         if idx in del_lines:
             continue
-        for a, b in sorted(char_dels.get(idx, []), reverse=True):
-            line = line[:a] + line[b:]
+        for a, b, repl in sorted(char_dels.get(idx, []), reverse=True):
+            line = line[:a] + repl + line[b:]
         new_lines.append(line.rstrip() if idx in char_dels else line)
     return "\n".join(new_lines), matched
+
+
+def code_lines(src):
+    """[(leading_indent, code_text)] for every line that carries code.
+
+    A comment is whitespace, so a line like `    /** doc */    int x;` counts as code with
+    indent 4 (its leading whitespace), not the column where `int` happens to start.
+    """
+    chars = list(src)
+    for _, s, e in lex(src):
+        for i in range(s, e):
+            if chars[i] != "\n":
+                chars[i] = " "
+    stripped = "".join(chars).split("\n")
+    out = []
+    for raw, nocomment in zip(src.split("\n"), stripped):
+        if not nocomment.strip():
+            continue
+        indent = len(raw) - len(raw.lstrip(" \t"))
+        out.append((indent, nocomment.strip()))
+    return out
+
+
+def indent_drift(src, new):
+    """1-based line number of the first code line whose indent changed, else 0.
+
+    code_only() strips whitespace, so it cannot see a comment deletion that leaves the
+    code shifted right; this compares (indent, code) pairs instead. Internal whitespace
+    runs are collapsed: `a /*x*/ b` -> `a b` is cosmetic, not indent drift — indent is
+    what this guard exists to catch.
+    """
+    a, b = code_lines(src), code_lines(new)
+    if len(a) != len(b):
+        return 0  # 行数变化交给 code_only 与人工复核, 这里只管对齐的缩进
+    for i, (x, y) in enumerate(zip(a, b), 1):
+        if x[0] != y[0] or " ".join(x[1].split()) != " ".join(y[1].split()):
+            return i
+    return 0
 
 
 def cmd_apply(args):
@@ -257,6 +309,11 @@ def cmd_apply(args):
         new, matched = plan
         if code_only(src) != code_only(new):
             print(f"ABORT {rel}: code changed, fix the tool before retrying", file=sys.stderr)
+            sys.exit(2)
+        drift = indent_drift(src, new)
+        if drift:
+            print(f"ABORT {rel}:{drift}: code line indent drifted; code_only() ignores "
+                  "whitespace so this guard is the only net", file=sys.stderr)
             sys.exit(2)
         if new != src:
             write_src(path, new)

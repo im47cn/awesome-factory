@@ -11,6 +11,7 @@
 #   ② lefthook.yml job 幂等注入（检测/注入均限定对应 hook 的 jobs/commands 段内;
 #      python3 行级手术 + 回读校验, 失败不报成功）:
 #      - pre-push mutation-gate job
+#      - pre-commit comment-gate job——Java 注释棘轮; baseline 缺席=未武装放行
 #      - post-merge comment-sync job——comment-baseline.json 是全树重算单 blob,
 #        git 无法内容合并, merge 后必漂移; 本 job 用 comment-gate.py sync 检漂即
 #        重算落盘（仓未武装 baseline 时 sync 自身 not-armed exit 0, 无害）
@@ -202,7 +203,7 @@ while read -r src dst; do
   fi
 done < <(list_face local)
 
-# ── ④ lefthook.yml job 幂等注入（pre-push mutation-gate + post-merge comment-sync; 检测/注入均限定对应 hook 段） ──
+# ── ④ lefthook.yml job 幂等注入（pre-push mutation-gate + pre-commit comment-gate + post-merge comment-sync; 检测/注入均限定对应 hook 段） ──
 # run 链语义: awesome-factory 删除防护契约——纯删除推送 exit 0 短路跳过门禁(sourcery/
 # coderabbit job 同款既定语义), 正常推送/读取异常 exit 1 门禁照跑, 故 || 链在正常推送
 # 必然落 mutation-gate; 不用 {push_files}: 新分支首推无 @{push} 引用时 lefthook 展开
@@ -223,7 +224,13 @@ JOB_BLOCK='    mutation-gate:
 PM_BLOCK='    comment-sync:
       run: python3 .lefthook/comment-gate.py sync --repo . --baseline .lefthook/comment-baseline.json'
 
-# python3 行级手术(不引入 yaml 依赖): 只认 pre-push.jobs|commands 段内同名 job——挂在
+# 棘轮语义: .lefthook/comment-baseline.json 缺席 = 未武装, gate 放行（防 17 仓装门即拦）;
+# 基线生成/收缩见 awesome-rules skills/delete-comment。基线是仓侧数据, 不进本分发面。
+# {staged_files}: 非本仓改动恒 skip; 本仓未 piped、不收 stdin, 不涉链首 stdin 限制。
+JOB_BLOCK_C='    comment-gate:
+      run: python3 .lefthook/comment-gate.py check --repo . --baseline .lefthook/comment-baseline.json {staged_files}'
+
+# python3 行级手术(不引入 yaml 依赖): 只认对应 hook 的 jobs|commands 段内同名 job——挂在
 # 其他 hook 下的同名 job 不算在位; 注入插到子段末尾并回读校验, 失败不报成功
 # exit 0=已在位或注入成功 / 1=check 发现缺席 / 3=注入失败
 lw_job() { # $1=lefthook.yml $2=check|inject $3=hook名 $4=job名 $5=hook缺席时插入的子段头 $6=job_block
@@ -315,6 +322,26 @@ else
       echo "✗ [gates] lefthook.yml post-merge commands 缺 comment-sync job（--check 失败; 重跑 install 幂等注入）"
       fail=1
     fi
+  fi
+fi
+
+# ── ④c lefthook.yml pre-commit comment-gate job 注入（幂等; Java 注释棘轮） ──
+if [ "$MODE" = install ]; then
+  if [ ! -f "$LW" ]; then
+    echo "⚠ [gates] 无 lefthook.yml; 请手动挂 pre-commit comment-gate job"
+  else
+    guard_dest "$LW"
+    lw_job "$LW" inject pre-commit comment-gate "  jobs:" "$JOB_BLOCK_C" || { echo "✗ [gates] lefthook.yml comment-gate job 注入失败"; fail=1; }
+  fi
+else
+  if [ ! -f "$LW" ]; then
+    echo "✗ [gates] lefthook.yml 缺席: pre-commit comment-gate job 无处挂载（--check 失败）"
+    fail=1
+  elif lw_job "$LW" check pre-commit comment-gate "  jobs:" "$JOB_BLOCK_C" >/dev/null 2>&1; then
+    echo "✔ [gates] lefthook.yml pre-commit comment-gate job 在位"
+  else
+    echo "✗ [gates] lefthook.yml pre-commit jobs 缺 comment-gate job（--check 失败; 重跑 install 幂等注入）"
+    fail=1
   fi
 fi
 
